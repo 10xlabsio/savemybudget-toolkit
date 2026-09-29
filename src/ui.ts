@@ -1,6 +1,6 @@
 /** Shared UI plumbing: env type, CSRF secret, public URL, formatting helpers, static lists. */
 import { randomBytes } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { domainToASCII, domainToUnicode, fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import type { Context } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
@@ -10,7 +10,8 @@ import type { Site } from './types.js';
 
 export type AppEnv = {
   Bindings: HttpBindings;
-  Variables: { nonce: string; sites: Site[] };
+  /** rawBody: a multipart body read under the upload cap by the UI middleware (see readBodyCapped). */
+  Variables: { nonce: string; sites: Site[]; rawBody?: Buffer };
 };
 export type Ctx = Context<AppEnv>;
 
@@ -36,6 +37,43 @@ export function tz(): string {
 export async function page(c: Ctx, node: unknown, status = 200): Promise<Response> {
   const body = await (node as Promise<string> | string);
   return c.html('<!doctype html>\n' + String(body), status as 200);
+}
+
+/** Bytes a multipart request may carry: the upload cap plus 1 MiB for boundaries and other fields. */
+export const multipartCapBytes = () => (config.maxUploadMb + 1) * 1048576;
+
+/**
+ * Read a request body with a hard byte cap, without trusting Content-Length (a chunked body has none).
+ * Returns null once more than `cap` bytes have arrived; the stream is cancelled at that point.
+ */
+export async function readBodyCapped(req: Request, cap: number): Promise<Buffer | null> {
+  const declared = Number(req.headers.get('content-length') ?? '0');
+  if (declared > cap) { try { await req.body?.cancel(); } catch { /* ignore */ } return null; }
+  if (!req.body) return Buffer.alloc(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) { try { await reader.cancel(); } catch { /* ignore */ } return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** Parse an already-buffered multipart/urlencoded body the way Hono's parseBody({ all: true }) would. */
+export async function parseBufferedForm(buf: Buffer, contentType: string): Promise<Record<string, string | File | (string | File)[]>> {
+  const fd = await new Request('http://localhost/', { method: 'POST', headers: { 'content-type': contentType }, body: bytes(buf) }).formData();
+  const out: Record<string, string | File | (string | File)[]> = {};
+  for (const [k, v] of fd.entries()) {
+    const cur = out[k];
+    if (cur === undefined) out[k] = v;
+    else if (Array.isArray(cur)) cur.push(v);
+    else out[k] = [cur, v];
+  }
+  return out;
 }
 
 /** Buffer → Uint8Array over its own ArrayBuffer (what Response bodies accept in strict typings). */
@@ -93,20 +131,38 @@ export const escJson = (v: unknown) => JSON.stringify(v).replace(/</g, '\\u003c'
 // ---------- hostname / site validation ----------
 
 const PLACEHOLDER_HOSTS = ['google.com', 'example.com', 'example.org', 'example.net', 'localhost', 'chrome.com', 'demo.com', 'test.com', 'yourbrand.com', 'yoursite.com', 'mysite.com'];
-const HOST_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/;
+const LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/; // one DNS label; no nested quantifier, linear time
+const TLD_RE = /^[a-z][a-z0-9-]{1,62}$/;
 
-/** Returns the normalised hostname or an error message. */
+/** Linear-time hostname check: total length, at least two labels, each label 1–63 chars, alphabetic TLD. */
+function isHostname(h: string): boolean {
+  if (h.length < 1 || h.length > 253) return false;
+  const labels = h.split('.');
+  if (labels.length < 2) return false;
+  for (let i = 0; i < labels.length - 1; i++) if (!LABEL_RE.test(labels[i])) return false;
+  return TLD_RE.test(labels[labels.length - 1]);
+}
+
+/** Returns the normalised (punycode, lower-case) hostname or an error message. */
 export function validateHost(raw: string): { host: string } | { error: string } {
-  let h = (raw || '').trim().toLowerCase();
+  let h = (raw || '').trim().toLowerCase().replace(/\.$/, '');
   if (!h) return { error: 'Enter the hostname your ads land on, for example shop.yourbrand.com.' };
   if (/^[a-z]+:\/\//.test(h)) return { error: 'Enter just the hostname, without http:// or https://.' };
   if (/[/?#:@\s]/.test(h)) return { error: 'Enter just the hostname — no path, port or query string.' };
+  // Internationalised names (münchen-shop.de) are stored as punycode (xn--mnchen-shop-9db.de), which is what DNS and the browser's Origin header use.
+  const ascii = domainToASCII(h);
+  if (ascii) h = ascii.toLowerCase();
   const bare = h.replace(/^www\./, '');
   if (PLACEHOLDER_HOSTS.some((p) => bare === p || bare.endsWith('.' + p))) {
     return { error: 'That looks like a placeholder. Enter the hostname your ads actually land on, for example shop.yourbrand.com.' };
   }
-  if (!HOST_RE.test(h)) return { error: 'That does not look like a hostname. Use letters, digits, hyphens and dots, for example shop.yourbrand.com.' };
+  if (!isHostname(h)) return { error: 'That does not look like a hostname. Use letters, digits, hyphens and dots, for example shop.yourbrand.com.' };
   return { host: h };
+}
+
+/** Unicode form of a stored (punycode) hostname, for display. */
+export function displayHost(host: string): string {
+  try { return domainToUnicode(host) || host; } catch { return host; }
 }
 
 export function makeSiteKey(host: string): string {

@@ -156,6 +156,71 @@ describe('collect', () => {
     resetRateLimit();
   });
 
+  it('H1: with SMB_TRUST_PROXY the RIGHTMOST X-Forwarded-For hop is stored, never the client-written left part', async () => {
+    const { config } = await import('../src/config.js');
+    const was = config.trustProxy;
+    config.trustProxy = true;
+    try {
+      await post('/v1/beacon', base('load', 'k-collect', 'xff-1'), '10.0.0.2', { 'x-forwarded-for': '9.9.9.9, 1.2.3.4' });
+      assert.equal(row(siteId, 'xff-1')[0].ip, '1.2.3.4');
+      // v4-mapped and junk hops: junk is skipped, mapped prefix stripped
+      await post('/v1/beacon', base('load', 'k-collect', 'xff-2'), '10.0.0.2', { 'x-forwarded-for': '8.8.8.8, not-an-ip, ::ffff:5.5.5.5' });
+      assert.equal(row(siteId, 'xff-2')[0].ip, '5.5.5.5');
+      // header with no valid address at all -> socket address
+      await post('/v1/beacon', base('load', 'k-collect', 'xff-3'), '203.0.113.77', { 'x-forwarded-for': 'garbage' });
+      assert.equal(row(siteId, 'xff-3')[0].ip, '203.0.113.77');
+    } finally { config.trustProxy = was; }
+    // without trustProxy the header is ignored entirely
+    await post('/v1/beacon', base('load', 'k-collect', 'xff-4'), '203.0.113.78', { 'x-forwarded-for': '1.2.3.4' });
+    assert.equal(row(siteId, 'xff-4')[0].ip, '203.0.113.78');
+  });
+
+  it('H1: the rate limit is keyed on the socket address, so a rotating X-Forwarded-For cannot reset it', async () => {
+    const { config } = await import('../src/config.js');
+    const was = config.trustProxy;
+    config.trustProxy = true;
+    resetRateLimit();
+    try {
+      const b = getCounter('collect_ratelimited');
+      for (let i = 0; i < 120; i++) await post('/v1/beacon', base('load', 'k-collect', 'rlx-' + i), '198.51.100.9', { 'x-forwarded-for': `1.1.${i >> 8}.${i & 255}` });
+      await post('/v1/beacon', base('load', 'k-collect', 'rlx-over'), '198.51.100.9', { 'x-forwarded-for': '2.2.2.2' });
+      assert.equal(getCounter('collect_ratelimited'), b + 1);
+      assert.equal(row(siteId, 'rlx-over').length, 0);
+    } finally { config.trustProxy = was; resetRateLimit(); }
+  });
+
+  it('H2: a beacon whose Origin is another site is dropped and counted; the site host, its subdomains and no Origin are accepted', async () => {
+    const b = getCounter('collect_bad_origin');
+    await post('/v1/beacon', base('load', 'k-collect', 'org-evil'), '203.0.113.20', { origin: 'https://evil.example' });
+    assert.equal(row(siteId, 'org-evil').length, 0);
+    assert.equal(getCounter('collect_bad_origin'), b + 1);
+    // Referer is consulted when there is no Origin
+    await post('/v1/beacon', base('load', 'k-collect', 'ref-evil'), '203.0.113.20', { referer: 'https://evil.example/page' });
+    assert.equal(row(siteId, 'ref-evil').length, 0);
+    // a suffix that merely ends with the host name is not a subdomain
+    await post('/v1/beacon', base('load', 'k-collect', 'org-suffix'), '203.0.113.20', { origin: 'https://notshop.test' });
+    assert.equal(row(siteId, 'org-suffix').length, 0);
+    await post('/v1/beacon', base('load', 'k-collect', 'org-null'), '203.0.113.20', { origin: 'null' });
+    assert.equal(row(siteId, 'org-null').length, 0);
+    assert.equal(getCounter('collect_bad_origin'), b + 4);
+    for (const [s, origin] of [['org-exact', 'https://shop.test'], ['org-www', 'https://www.shop.test'], ['org-sub', 'https://promo.shop.test:8443']] as const) {
+      await post('/v1/beacon', base('load', 'k-collect', s), '203.0.113.21', { origin });
+      assert.equal(row(siteId, s).length, 1, origin);
+    }
+    await post('/v1/beacon', base('load', 'k-collect', 'org-none'), '203.0.113.22');
+    assert.equal(row(siteId, 'org-none').length, 1);
+    assert.equal(getCounter('collect_bad_origin'), b + 4);
+  });
+
+  it('H2: originAllowed handles punycode and unicode hosts alike', async () => {
+    const { originAllowed } = await import('../src/collect/index.js');
+    const site = { host: 'xn--mnchen-shop-thb.de' };
+    assert.equal(originAllowed(site, 'https://münchen-shop.de', undefined), true);
+    assert.equal(originAllowed(site, 'https://www.xn--mnchen-shop-thb.de', undefined), true);
+    assert.equal(originAllowed(site, 'https://muenchen-shop.de', undefined), false);
+    assert.equal(originAllowed(site, 'not a url', undefined), false);
+  });
+
   it('body over 64 KB is rejected', async () => {
     const b = getCounter('collect_invalid');
     const r = await post('/v1/beacon', base('load', 'k-collect', 'big', { ref: 'x'.repeat(70_000) }));

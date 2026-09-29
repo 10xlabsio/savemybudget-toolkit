@@ -12,6 +12,18 @@ The latest minor release. Security fixes are released as patch versions and anno
 
 The only routes meant to be public are `POST /collect`, `GET /collect/healthz` and `GET /sdk/*`. The shipped Compose file and Caddyfile expose nothing else. Findings about the UI being reachable are still welcome — someone will expose it — but the intended threat model is: an attacker on the internet can send beacons and fetch the SDK, nothing more.
 
+## Threat model for beacons
+
+**The site key is a public identifier, not a secret.** It sits in the page source of every page the tag is on. Anyone who has it can post beacons to the collector that name your site. Beacons are client telemetry: the click ID, dwell time, interaction counts, automation markers and the like are whatever the sending browser (or script) says they are.
+
+What the collector does about it:
+
+- **It records the connecting IP itself.** The address on every event row is taken from the TCP connection (or, with `SMB_TRUST_PROXY=1`, from the hop your own proxy appended to `X-Forwarded-For` — the rightmost one; the parts a client could have written are ignored). It is the one field a sender cannot choose, and the rate limit is keyed on it.
+- **Browser-side forgery is refused.** Browsers always send an `Origin` header on a cross-origin `POST`, including `sendBeacon`, so a page on another site cannot post beacons that claim to be yours: the collector drops any beacon whose `Origin` (or, failing that, `Referer`) host is not the site's host, its www/apex twin or a subdomain of it, and counts it under `collect_bad_origin` on the Settings page. A beacon with no `Origin` at all is accepted — same-origin `sendBeacon`, some older browsers and non-browser clients send none.
+- **Scripted forgery is not prevented.** A script can set any header, so a determined party can still inject events with a fabricated click ID and behaviour, at up to the rate limit per address. The evidence file should be read with that in mind: the server-recorded IP, timestamp and the fact that a request arrived are the collector's own observations; everything the beacon carries is the sender's claim. `summary.md` is written as observations for that reason, and Google's own click records are the reference the request is judged against.
+
+If you need stronger guarantees, cross-check beacons against your web server log (the "request seen, no beacon" and "beacon, no request" rules exist for exactly this) and keep the collector on its own subdomain so the `Origin` check has a clean host to compare against.
+
 ## What we consider in scope
 
 - Anything that lets a beacon or an upload execute code, read files, or reach other routes

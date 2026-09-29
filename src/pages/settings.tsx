@@ -1,5 +1,5 @@
 import { Layout, Csrf } from './layout.js';
-import { TIMEZONES, n } from '../ui.js';
+import { TIMEZONES, displayHost, n } from '../ui.js';
 import type { Notification } from '../jobs/index.js';
 import type { Site } from '../types.js';
 
@@ -9,6 +9,7 @@ export interface SettingsProps {
   telemetryOn: boolean; telemetryEnv: boolean; updateCheckOn: boolean; updateCheckEnv: boolean;
   bind: string; counters: { key: string; value: number; what: string }[];
   saved?: boolean;
+  error?: string | null;
 }
 
 const THRESHOLDS: [number, string][] = [[12, '12 hours'], [24, '1 day'], [48, '2 days'], [72, '3 days'], [168, '7 days']];
@@ -20,6 +21,7 @@ export function SettingsPage(p: SettingsProps) {
       <h1>Settings</h1>
       <p class="sub">Instance-wide. Site details live on each site's edit page.</p>
       {p.saved ? <div class="note green"><div>Saved.</div></div> : null}
+      {p.error ? <div class="note red"><div>{p.error}</div></div> : null}
       <form method="post" action="/api/settings">
         <Csrf token={p.csrf} />
         <input type="hidden" name="_next" value="/settings?saved=1" />
@@ -80,7 +82,7 @@ export function SettingsPage(p: SettingsProps) {
               <tbody>
                 {p.sites.map((s) => (
                   <tr>
-                    <td>{s.name} <span class="hint mono">{s.host}</span></td>
+                    <td class="wrap">{s.name} <span class="hint mono">{displayHost(s.host)}</span></td>
                     <td style="white-space:nowrap">
                       <form method="post" action={`/api/sites/${s.id}/delete-data`} style="display:inline" data-confirm={`Delete all click records, uploads and analyses for ${s.name}? The site and its key stay.`}>
                         <Csrf token={p.csrf} /><button type="submit" class="btn sm">Delete site data</button>

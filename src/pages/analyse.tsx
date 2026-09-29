@@ -45,7 +45,7 @@ export function AnalysePage(p: AnalyseProps) {
         </form>
         {p.analyses.length ? (
           <p class="hint" style="margin-top:10px">Earlier runs: {p.analyses.slice(0, 8).map((x, i) => (
-            <>{i ? ' · ' : ''}<a href={`/sites/${p.site.id}/analyse?analysis=${x.id}`}>{x.range_from} → {x.range_to}</a> ({x.flag}/{x.total})</>
+            <>{i ? ' · ' : ''}<a href={`/sites/${p.site.id}/analyse?analysis=${x.id}`} title={`Run ${fmtTime(x.ran_at)}`}>{x.range_from} → {x.range_to}</a> ({x.flag}/{x.total}, ran {fmtTime(x.ran_at)})</>
           ))}</p>
         ) : null}
       </div>

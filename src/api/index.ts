@@ -1,6 +1,8 @@
 /** JSON / form API. Mutations carry CSRF (checked in app.ts middleware). Forms use PRG. */
 import { randomBytes } from 'node:crypto';
+import { promises as dns } from 'node:dns';
 import { existsSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { basename, join } from 'node:path';
 import { Hono } from 'hono';
 import { config } from '../config.js';
@@ -11,7 +13,7 @@ import { writeZip, type ZipEntry } from '../claim/zip.js';
 import { runAnalysis, saveAnalysis, loadAnalysis } from '../rules/index.js';
 import { dismissNotification, retentionDays, clearNotifications, log } from '../jobs/index.js';
 import * as telemetry from '../telemetry/index.js';
-import { COUNTRY_CODES, bytes, makeSiteKey, validateHost, type AppEnv } from '../ui.js';
+import { COUNTRY_CODES, bytes, makeSiteKey, parseBufferedForm, validateHost, type AppEnv } from '../ui.js';
 
 export const api = new Hono<AppEnv>();
 
@@ -23,20 +25,36 @@ function siteId(raw: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-async function form(c: { req: { header(n: string): string | undefined; parseBody(): Promise<Record<string, unknown>>; json(): Promise<unknown> } }): Promise<Record<string, unknown>> {
+type FormCtx = { req: { header(n: string): string | undefined; parseBody(o: { all: true }): Promise<Record<string, unknown>>; json(): Promise<unknown> }; get(k: 'rawBody'): Buffer | undefined };
+
+/**
+ * Body as a record. `all: true` keeps every value of a repeated field (a <select multiple> posts one
+ * `target_countries` per selected option) as an array; a field sent once stays a string.
+ * Multipart bodies were already read under the size cap by the UI middleware (rawBody), so parse that buffer.
+ */
+async function form(c: FormCtx): Promise<Record<string, unknown>> {
   const ct = (c.req.header('content-type') ?? '').toLowerCase();
   if (ct.includes('application/json')) {
     try { const j = await c.req.json(); return j && typeof j === 'object' ? (j as Record<string, unknown>) : {}; } catch { return {}; }
   }
-  try { return await c.req.parseBody(); } catch { return {}; }
+  const raw = c.get('rawBody');
+  if (raw !== undefined && ct.includes('multipart/form-data')) {
+    try { return await parseBufferedForm(raw, c.req.header('content-type')!); } catch { return {}; }
+  }
+  try { return await c.req.parseBody({ all: true }); } catch { return {}; }
+}
+
+/** Country codes from a form: string | string[] (repeated field), each possibly comma-separated. Upper-case ISO-3166 alpha-2 only. */
+export function parseCountries(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  const codes = list.flatMap((x) => String(x).split(',')).map((x) => x.trim().toUpperCase()).filter((x) => /^[A-Z]{2}$/.test(x) && COUNTRY_CODES.has(x));
+  return [...new Set(codes)];
 }
 
 function siteFormValues(b: Record<string, unknown>) {
-  const raw = b['target_countries'];
-  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',') : [];
-  const target_countries = [...new Set(list.map((x) => String(x).trim().toUpperCase()).filter((x) => COUNTRY_CODES.has(x)))];
+  const target_countries = parseCountries(b['target_countries']);
   return {
-    name: str(b['name'], 80).trim(),
+    name: str(b['name'], 60).trim(),
     host: str(b['host'], 253).trim(),
     consent_mode: str(b['consent_mode']) === 'consent_gated' ? 'consent_gated' : 'legitimate_interest',
     target_countries,
@@ -98,25 +116,73 @@ api.get('/sites/:id/status', (c) => {
 
 // ---------- setup ----------
 
-api.get('/setup/check', async (c) => {
-  const raw = (c.req.query('url') ?? '').trim().replace(/\/+$/, '');
+/** True for addresses the setup check must not probe: loopback, RFC 1918, link-local, CGNAT, 0/8, multicast, ULA, and their v4-mapped forms. */
+export function isInternalAddress(addr: string): boolean {
+  let a = addr.toLowerCase();
+  if (a.startsWith('[') && a.endsWith(']')) a = a.slice(1, -1);
+  const zone = a.indexOf('%'); if (zone !== -1) a = a.slice(0, zone);
+  if (a.startsWith('::ffff:')) {
+    const v4 = a.slice(7);
+    if (isIP(v4) === 4) return isInternalAddress(v4);
+    const hex = v4.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/); // URL parsing writes ::ffff:10.0.0.1 as ::ffff:a00:1
+    if (hex) { const hi = parseInt(hex[1], 16), lo = parseInt(hex[2], 16); return isInternalAddress(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`); }
+  }
+  if (isIP(a) === 4) {
+    const [o0, o1] = a.split('.').map(Number);
+    return o0 === 0 || o0 === 10 || o0 === 127 || (o0 === 169 && o1 === 254) || (o0 === 172 && o1 >= 16 && o1 <= 31) || (o0 === 192 && o1 === 168) || (o0 === 100 && o1 >= 64 && o1 <= 127) || o0 >= 224;
+  }
+  if (isIP(a) === 6) {
+    if (a === '::1' || a === '::') return true;
+    const first = parseInt(a.split(':')[0] || '0', 16);
+    if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
+    if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link local
+    if ((first & 0xff00) === 0xff00) return true; // multicast
+    return false;
+  }
+  return true; // not an address at all
+}
+
+/** host:port of SMB_PUBLIC_URL (environment, not the UI setting — the operator's own address is allowed to be private, e.g. a dev instance on 127.0.0.1). */
+function envPublicHostPort(): string | null {
+  try { return config.publicUrl ? new URL(config.publicUrl).host.toLowerCase() : null; } catch { return null; }
+}
+
+/**
+ * POST (CSRF-protected) so a link cannot make this server probe things. The target host is resolved first and
+ * refused when ANY of its addresses is internal, so the check cannot be pointed at the cloud metadata service or
+ * another container. The response never echoes the upstream status or body: only whether the toolkit answered.
+ * The operator's own SMB_PUBLIC_URL (host and port) is exempt so a dev setup on 127.0.0.1 still checks.
+ */
+api.post('/setup/check', async (c) => {
+  const b = await form(c);
+  const raw = str(b['url'], 2048).trim().replace(/\/+$/, '');
   let u: URL;
   try { u = new URL(raw); } catch { return c.json({ ok: false, url: raw, reason: 'That is not a full URL. It should look like https://t.yourbrand.com.' }); }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return c.json({ ok: false, url: raw, reason: 'The URL must start with https://.' });
-  const target = `${raw}/collect/healthz`;
+  if (u.username || u.password) return c.json({ ok: false, url: raw, reason: 'The URL must not carry credentials.' });
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const target = `${u.origin}${u.pathname.replace(/\/+$/, '')}/collect/healthz`;
+  const unreachable = { ok: false, url: target, reason: `${target} could not be reached from this server. Check the DNS record and the proxy.` };
+  if (u.host.toLowerCase() !== envPublicHostPort()) {
+    let addrs: string[];
+    if (isIP(host)) addrs = [host];
+    else {
+      try { addrs = (await dns.lookup(host, { all: true })).map((r) => r.address); } catch { return c.json(unreachable); }
+    }
+    if (!addrs.length || addrs.some(isInternalAddress)) {
+      return c.json({ ok: false, url: target, reason: `${host} points at a private or local address. The public URL must be the address your visitors reach from the internet.` });
+    }
+  }
   try {
     const res = await fetch(target, { signal: AbortSignal.timeout(6000), redirect: 'manual' });
-    if (!res.ok) return c.json({ ok: false, url: target, reason: `${target} answered ${res.status}. The proxy must pass /collect to the toolkit.` });
-    const j = (await res.json().catch(() => null)) as { ok?: boolean; version?: string } | null;
-    if (!j?.ok) return c.json({ ok: false, url: target, reason: `${target} answered, but not with the toolkit's health response. Something else is on that address.` });
-    if (u.protocol !== 'https:') return c.json({ ok: true, url: target, warning: 'Reachable over http. Browsers will not post beacons from an https page to it — put TLS in front before installing the tag.' });
-    return c.json({ ok: true, url: target, version: j.version ?? null });
+    const j = res.ok ? ((await res.json().catch(() => null)) as { ok?: boolean; version?: string } | null) : null;
+    if (!j?.ok) return c.json({ ok: false, url: target, reason: `${target} answered, but not with the toolkit's health response. The proxy must pass /collect to the toolkit and nothing else may sit on that address.`, kind: 'not_toolkit' });
+    const warning = u.protocol !== 'https:' ? 'Reachable over http. Browsers will not post beacons from an https page to it — put TLS in front before installing the tag.' : undefined;
+    return c.json({ ok: true, url: target, version: j.version ?? null, ...(warning ? { warning } : {}) });
   } catch (e) {
     const name = e instanceof Error ? e.name : '';
-    const reason = name === 'TimeoutError' || name === 'AbortError'
-      ? `${target} did not answer within 6 seconds. Check DNS and that the proxy is up.`
-      : `${target} could not be reached from this server. Check the DNS record and the proxy.`;
-    return c.json({ ok: false, url: target, reason });
+    if (name === 'TimeoutError' || name === 'AbortError') return c.json({ ok: false, url: target, reason: `${target} did not answer within 6 seconds. Check DNS and that the proxy is up.`, kind: 'unreachable' });
+    return c.json({ ...unreachable, kind: 'unreachable' });
   }
 });
 
@@ -143,48 +209,86 @@ api.post('/settings', async (c) => {
   }
   if (config.telemetry && b['telemetry_present'] === '1') setSetting('telemetry', b['telemetry'] === 'on' ? 'on' : 'off');
   if (config.updateCheck && b['update_check_present'] === '1') setSetting('update_check', b['update_check'] === 'on' ? 'on' : 'off');
-  const next = str(b['_next'], 200);
-  return c.redirect(next.startsWith('/') && !next.startsWith('//') ? next : '/settings?saved=1', 303);
+  return c.redirect(safeNext(str(b['_next'], 200)) ?? '/settings?saved=1', 303);
 });
+
+/** A local path only: one leading slash, then a conservative character set. `//host` and `/\host` (which browsers read as scheme-relative) are refused. */
+export function safeNext(next: string): string | null {
+  if (!/^\/[A-Za-z0-9_\-/?=&.%]*$/.test(next)) return null;
+  if (next.startsWith('//') || next.startsWith('/\\')) return null;
+  return next;
+}
 
 // ---------- uploads ----------
 
 const uploadsDir = () => { const d = join(config.dataDir, 'uploads'); mkdirSync(d, { recursive: true }); return d; };
 const TOKEN_RE = /^[a-f0-9]{24}\.bin$/;
 
-function readStaged(token: string): { buf: Buffer; filename: string; site_id: number } | null {
+interface StagedMeta { filename: string; site_id: number; mapping: Record<string, string> | null; at: number }
+
+function readStaged(token: string): { buf: Buffer; filename: string; site_id: number; mapping: Record<string, string> | null } | null {
   if (!TOKEN_RE.test(token)) return null;
   const p = join(uploadsDir(), token);
   const metaP = p + '.json';
   if (!existsSync(p) || !existsSync(metaP)) return null;
-  const meta = JSON.parse(readFileSync(metaP, 'utf8')) as { filename: string; site_id: number };
-  return { buf: readFileSync(p), filename: meta.filename, site_id: meta.site_id };
+  const meta = JSON.parse(readFileSync(metaP, 'utf8')) as StagedMeta;
+  return { buf: readFileSync(p), filename: meta.filename, site_id: meta.site_id, mapping: meta.mapping ?? null };
 }
 function dropStaged(token: string) {
   if (!TOKEN_RE.test(token)) return;
   for (const p of [join(uploadsDir(), token), join(uploadsDir(), token + '.json')]) { try { unlinkSync(p); } catch { /* gone */ } }
 }
 
+const CANON_FIELDS = ['timestamp', 'ip', 'gclid', 'user_agent', 'url', 'referer', 'campaign'];
+
+/**
+ * Column mapping from a body: either `mapping` as a JSON string / object, or one `mapping[<canonical>]` field per
+ * column (what a plain HTML form posts). Values are header names from the file; empty ones are dropped.
+ */
+function mappingFrom(b: Record<string, unknown>): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  const m = b['mapping'];
+  let obj: unknown = m;
+  if (typeof m === 'string' && m) { try { obj = JSON.parse(m); } catch { obj = undefined; } }
+  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) if (CANON_FIELDS.includes(k) && typeof v === 'string' && v.trim()) out[k] = v.trim().slice(0, 256);
+  }
+  for (const k of CANON_FIELDS) {
+    const v = b[`mapping[${k}]`];
+    const s = Array.isArray(v) ? v[v.length - 1] : v;
+    if (typeof s === 'string' && s.trim()) out[k] = s.trim().slice(0, 256);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 api.post('/sites/:id/uploads', async (c) => {
   const id = siteId(c.req.param('id'));
   const site = id ? getSite(id) : null;
   if (!site) return jsonError(c, 'Site not found.', 404);
-  const len = Number(c.req.header('content-length') ?? '0');
-  if (len > config.maxUploadMb * 1048576) return jsonError(c, `The file is larger than ${config.maxUploadMb} MB. Split it, or raise SMB_MAX_UPLOAD_MB.`, 413);
+  const cap = config.maxUploadMb * 1048576;
   const b = await form(c);
   const f = b['file'];
-  if (!(f instanceof File)) return jsonError(c, 'Choose a file first.');
-  if (f.size > config.maxUploadMb * 1048576) return jsonError(c, `The file is larger than ${config.maxUploadMb} MB. Split it, or raise SMB_MAX_UPLOAD_MB.`, 413);
-  const buf = Buffer.from(await f.arrayBuffer());
-  const filename = basename(f.name || 'upload').slice(0, 255);
-  let mapping: Record<string, string> | undefined;
-  if (typeof b['mapping'] === 'string' && b['mapping']) { try { mapping = JSON.parse(b['mapping']); } catch { mapping = undefined; } }
   const prev = str(b['token'], 64);
+  const mapping = mappingFrom(b);
+  let buf: Buffer;
+  let filename: string;
+  if (f instanceof File && f.size > 0) {
+    if (f.size > cap) return jsonError(c, `The file is larger than ${config.maxUploadMb} MB. Split it, or raise SMB_MAX_UPLOAD_MB.`, 413);
+    buf = Buffer.from(await f.arrayBuffer());
+    filename = basename(f.name || 'upload').slice(0, 255);
+  } else {
+    // Re-check with a new column mapping: reuse the staged file rather than asking for it again.
+    const staged = prev ? readStaged(prev) : null;
+    if (!staged || staged.site_id !== site.id) return jsonError(c, 'Choose a file first.');
+    buf = staged.buf; filename = staged.filename;
+  }
   if (prev) dropStaged(prev);
   const preview = analyzeUpload(buf, filename, { retentionDays: retentionDays(), mapping });
+  // Nothing to stage when the file could not even be read as a CSV or log: no import and no re-mapping can follow.
+  if (preview.format === null) return c.json({ token: null, preview });
   const token = randomBytes(12).toString('hex') + '.bin';
   writeFileSync(join(uploadsDir(), token), buf);
-  writeFileSync(join(uploadsDir(), token + '.json'), JSON.stringify({ filename, site_id: site.id, mapping: mapping ?? null, at: Date.now() }));
+  writeFileSync(join(uploadsDir(), token + '.json'), JSON.stringify({ filename, site_id: site.id, mapping: mapping ?? null, at: Date.now() } satisfies StagedMeta));
   return c.json({ token, preview });
 });
 
@@ -196,13 +300,7 @@ api.post('/sites/:id/uploads/:token/import', async (c) => {
   const staged = readStaged(token);
   if (!staged || staged.site_id !== site.id) return jsonError(c, 'That upload is no longer staged. Check the file again.', 410);
   const b = await form(c);
-  let mapping: Record<string, string> | undefined;
-  const m = b['mapping'];
-  if (m && typeof m === 'object') mapping = m as Record<string, string>;
-  else if (typeof m === 'string' && m) { try { mapping = JSON.parse(m); } catch { mapping = undefined; } }
-  if (!mapping) {
-    try { const meta = JSON.parse(readFileSync(join(uploadsDir(), token + '.json'), 'utf8')); if (meta.mapping) mapping = meta.mapping; } catch { /* none */ }
-  }
+  const mapping = mappingFrom(b) ?? staged.mapping ?? undefined;
   try {
     const r = importUpload(site.id, staged.buf, staged.filename, { retentionDays: retentionDays(), mapping });
     dropStaged(token);
@@ -290,8 +388,10 @@ api.post('/packages/:id/delete', (c) => {
   const p = id ? getPackage(id) : undefined;
   if (!p) return c.notFound();
   const a = loadAnalysis(p.analysis_id);
-  try { unlinkSync(p.path); } catch { /* already gone */ }
   db().prepare('DELETE FROM packages WHERE id = ?').run(p.id);
+  // Only this package's own file. Packages built before 1.0.1 shared one path per analysis; leave a file another row still points at.
+  const shared = db().prepare('SELECT COUNT(*) AS n FROM packages WHERE path = ?').get(p.path) as { n: number };
+  if (shared.n === 0) { try { unlinkSync(p.path); } catch { /* already gone */ } }
   return c.redirect(a ? `/sites/${a.site_id}/analyse?analysis=${a.id}` : '/sites', 303);
 });
 

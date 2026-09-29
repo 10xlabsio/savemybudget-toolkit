@@ -24,6 +24,9 @@ The loader is under 1 KB and loads the SDK (about 2.6 KB) asynchronously. It nev
 **What does it send to SaveMyBudget?**
 From your server: anonymous usage counts, unless you switch them off — every field is listed in [TELEMETRY.md](../TELEMETRY.md). From your visitors' browsers: nothing. The tag only talks to your own collector.
 
+**Can someone fake clicks into my toolkit?**
+Partly. The site key in the snippet is public, so anyone can post beacons that name your site. Two things limit what that achieves: the collector records the IP address of whoever connected (that field can't be chosen by the sender), and it drops beacons whose browser `Origin` isn't your site's host, so a page on another site can't inject them. A script that sets its own headers still can, up to the rate limit. So treat the beacon fields (click ID, dwell time, interactions) as what the sender reported and the IP, timestamp and the fact a request arrived as what your server saw. Cross-checking with your web server log closes most of the gap — see [SECURITY.md](../SECURITY.md).
+
 **Can I run it for several sites?**
 Yes. One container, any number of sites, each with its own key and its own analysis.
 

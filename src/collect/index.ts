@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+import { domainToASCII } from 'node:url';
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
 import { config } from '../config.js';
@@ -112,19 +114,51 @@ function union(a: string[], b: string[]): string[] {
   return Array.from(new Set([...a, ...b]));
 }
 
-function clientIp(c: { req: { header(n: string): string | undefined }; env?: unknown }): string {
-  let ip: string | undefined;
+function stripMapped(ip: string): string {
+  return ip.toLowerCase().startsWith('::ffff:') && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
+}
+
+/** The TCP peer — never taken from headers. Rate limiting keys on this. */
+export function socketIp(c: { env?: unknown }): string {
+  const env = c.env as Partial<HttpBindings> | undefined;
+  const ip = env?.incoming?.socket?.remoteAddress;
+  return ip ? stripMapped(ip) : '0.0.0.0';
+}
+
+/**
+ * The visitor IP to record. With SMB_TRUST_PROXY=1 the proxy in front (Caddy, nginx) APPENDS the address it
+ * saw to X-Forwarded-For, so the trustworthy hop is the RIGHTMOST valid address; anything to the left of it was
+ * supplied by the client and can say whatever it likes. Without a proxy, the socket address is the visitor.
+ */
+export function clientIp(c: { req: { header(n: string): string | undefined }; env?: unknown }): string {
   if (config.trustProxy) {
     const xff = c.req.header('x-forwarded-for');
-    if (xff) ip = xff.split(',')[0].trim();
+    if (xff) {
+      const hops = xff.split(',').map((h) => stripMapped(h.trim())).filter((h) => isIP(h) !== 0);
+      if (hops.length) return hops[hops.length - 1];
+    }
   }
-  if (!ip) {
-    const env = c.env as Partial<HttpBindings> | undefined;
-    ip = env?.incoming?.socket?.remoteAddress ?? undefined;
-  }
-  if (!ip) return '0.0.0.0';
-  if (ip.toLowerCase().startsWith('::ffff:')) ip = ip.slice(7);
-  return ip;
+  return socketIp(c);
+}
+
+/**
+ * Browser-side forgery check. Browsers always send an Origin header on a cross-origin POST (fetch and
+ * sendBeacon alike), so a page on evil.example cannot post a beacon that claims to come from the site: the
+ * Origin says where it really came from. We accept the site's host, its www/apex twin and any subdomain
+ * (ads may land on shop.example, www.shop.example or promo.shop.example), in Unicode or punycode form.
+ * A missing Origin is accepted: same-origin sendBeacon with text/plain, older browsers and curl send none,
+ * and a scripted attacker can set any header anyway — that case is covered in SECURITY.md, not here.
+ */
+export function originAllowed(site: Pick<Site, 'host'>, originHeader: string | undefined, refererHeader: string | undefined): boolean {
+  const raw = originHeader ?? refererHeader;
+  if (!raw) return true;
+  if (raw === 'null') return false;
+  let h: string;
+  try { h = new URL(raw).hostname.toLowerCase(); } catch { return false; }
+  const ascii = domainToASCII(h) || h;
+  const siteHost = (domainToASCII(site.host) || site.host).toLowerCase();
+  const apex = siteHost.replace(/^www\./, '');
+  return ascii === siteHost || ascii === apex || ascii.endsWith('.' + apex);
 }
 
 // ---------- rate limit ----------
@@ -269,8 +303,9 @@ collectApp.use('*', async (c, next) => {
 collectApp.options('*', (c) => c.body(null, 204));
 
 collectApp.post('/v1/beacon', async (c) => {
+  // Rate limit on the TCP peer: X-Forwarded-For is client-supplied and must not be able to reset the bucket.
+  if (rateLimited(socketIp(c))) { bumpCounter('collect_ratelimited'); return c.body(null, 204); }
   const ip = clientIp(c);
-  if (rateLimited(ip)) { bumpCounter('collect_ratelimited'); return c.body(null, 204); }
 
   const len = Number(c.req.header('content-length') ?? '0');
   if (len > BODY_CAP) { bumpCounter('collect_invalid'); return c.body(null, 204); }
@@ -291,6 +326,7 @@ collectApp.post('/v1/beacon', async (c) => {
 
   const site = getSiteByKey(p.c);
   if (!site) { bumpCounter('collect_unknown_key'); return c.body(null, 204); }
+  if (!originAllowed(site, c.req.header('origin'), c.req.header('referer'))) { bumpCounter('collect_bad_origin'); return c.body(null, 204); }
 
   try {
     handleBeacon(site, p, ip, c.req.header('user-agent') ?? null);

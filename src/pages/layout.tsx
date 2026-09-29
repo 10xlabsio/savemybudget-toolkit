@@ -4,7 +4,7 @@ import { siteHealth, type Health } from '../db.js';
 import { silentThresholdHours, type Notification } from '../jobs/index.js';
 import { RULES } from '../rules/index.js';
 import type { Site } from '../types.js';
-import { relTime, fmtDay, n } from '../ui.js';
+import { relTime, fmtDay, n, displayHost } from '../ui.js';
 
 export const CSS = `
 :root{--bg:#f6f6f8;--panel:#fff;--ink:#1B1B2F;--muted:#5d5c72;--line:#e3e2ea;--brand:#7A9A12;--brandname:#1B1B2F;--lav:#ece9f7;--lav-ink:#4a4470;
@@ -65,12 +65,16 @@ select[multiple]{height:180px}.hint{font-size:13px;color:var(--muted);margin:4px
 .range a{padding:4px 10px;border-radius:999px;text-decoration:none;color:var(--muted);font-size:14px}.range a.on{background:var(--lav);color:var(--lav-ink)}
 .ipcol{display:none}.showip .ipcol{display:table-cell}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
-.copybox{position:relative}.copybox .btn{position:absolute;right:8px;top:8px}
+.copybox{position:relative}.copybox .btn{position:absolute;right:8px;top:8px}.copybox pre{padding-right:78px}
+.brk{word-break:break-all;overflow-wrap:anywhere}.wrap,.wrap h1,.wrap .sub,td.wrap{overflow-wrap:anywhere;min-width:0}
+.scrollhint{display:none;margin:0 0 6px}
 .foot{color:var(--muted);font-size:13px;margin-top:30px;border-top:1px solid var(--line);padding-top:14px}
 ul.plain{list-style:none;padding:0;margin:0}ul.plain li{padding:6px 0;border-bottom:1px solid var(--line)}ul.plain li:last-child{border:0}
 .md h1{font-size:24px;margin:0 0 12px}.md h2{margin:24px 0 8px;font-size:18px}.md h3{margin:18px 0 6px}.md p{margin:0 0 12px}.md table{margin:0 0 14px}.md blockquote{border-left:3px solid var(--line);margin:0 0 12px;padding:2px 12px;color:var(--muted)}
-@media (max-width:760px){.grid4{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}main{padding:16px 16px 50px}.top .in{gap:10px}.top nav{gap:10px}
-.pills{display:none}.pillsel{display:block}.card{padding:14px}th,td{padding:7px 6px}}
+@media (max-width:760px){.grid4{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}main{padding:16px 16px 50px}.top .in{gap:10px;position:relative}.top nav{gap:10px}
+.pills{display:none}.pillsel{display:block}.card{padding:14px}th,td{padding:7px 6px}
+.sw{position:static}.sw .menu{left:16px;right:16px;min-width:0;max-width:none;top:calc(100% - 4px)}
+.svgchart text{font-size:19px}.scrollhint{display:block}h1{overflow-wrap:anywhere}}
 @media (max-width:460px){.grid4{grid-template-columns:1fr}}
 `;
 
@@ -132,7 +136,7 @@ function Switcher({ sites, active }: { sites: Site[]; active: Site | null }) {
       </summary>
       <div class="menu">
         {sites.map((s) => (
-          <a href={`/sites/${s.id}`}><Dot h={healthOf(s)} /> {s.name} <small>{s.host}</small></a>
+          <a href={`/sites/${s.id}`}><Dot h={healthOf(s)} /> {s.name} <small>{displayHost(s.host)}</small></a>
         ))}
         {active ? (
           <>

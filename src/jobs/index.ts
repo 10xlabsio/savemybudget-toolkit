@@ -1,4 +1,4 @@
-import { statSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { db, listSites, getSetting, now, getCounter } from '../db.js';
 import { config } from '../config.js';
@@ -52,6 +52,33 @@ export function storeSizeMb(): number {
   return bytes / 1048576;
 }
 
+// ---------- staged uploads ----------
+
+const STAGED_RE = /^[a-f0-9]{24}\.bin$/;
+export const STAGED_MAX_AGE_MS = 3600e3;
+
+/**
+ * "Check file" stages the upload as data/uploads/<token>.bin + .json until it is imported. A preview that was
+ * rejected or abandoned would otherwise stay forever; anything older than an hour is removed here.
+ */
+export function sweepStagedUploads(nowMs = Date.now(), maxAgeMs = STAGED_MAX_AGE_MS): number {
+  const dir = join(config.dataDir, 'uploads');
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return 0; }
+  let removed = 0;
+  for (const name of names) {
+    if (!STAGED_RE.test(name)) continue;
+    let at: number | null = null;
+    try { at = Number((JSON.parse(readFileSync(join(dir, name + '.json'), 'utf8')) as { at?: number }).at) || null; } catch { /* no meta */ }
+    if (at === null) { try { at = statSync(join(dir, name)).mtimeMs; } catch { continue; } }
+    if (nowMs - at > maxAgeMs) {
+      for (const p of [join(dir, name), join(dir, name + '.json')]) { try { unlinkSync(p); } catch { /* gone */ } }
+      removed++;
+    }
+  }
+  return removed;
+}
+
 // ---------- hourly tick ----------
 
 export function hourlyTick(nowDate = new Date()) {
@@ -61,6 +88,9 @@ export function hourlyTick(nowDate = new Date()) {
   // Retention purge
   const cutoff = new Date(nowDate.getTime() - retentionDays() * 86400e3).toISOString();
   d.prepare('DELETE FROM events WHERE ts < ?').run(cutoff);
+
+  // Staged uploads nobody imported
+  sweepStagedUploads(nowDate.getTime());
 
   const threshold = silentThresholdHours();
   for (const site of listSites()) {

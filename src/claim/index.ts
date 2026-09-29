@@ -249,8 +249,19 @@ export function buildPackage(analysisId: number, opts?: { includeWatch?: boolean
 
   const dir = join(config.dataDir, 'packages');
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `claim-${slug(site.host)}-${summary.range_from}-${summary.range_to}-${analysisId}.zip`);
-  writeFileSync(path, writeZip(entries));
-  const r = db().prepare('INSERT INTO packages(analysis_id,path,rows,created_at) VALUES(?,?,?,?)').run(analysisId, path, rows.length, now());
-  return { path, rows: rows.length, package_id: Number(r.lastInsertRowid) };
+  // The row comes first so its id can be part of the file name: two packages for one analysis (say, with and
+  // without watch rows) must never share a path, or building the second overwrites the first and deleting one
+  // orphans the other.
+  const d = db();
+  const r = d.prepare('INSERT INTO packages(analysis_id,path,rows,created_at) VALUES(?,?,?,?)').run(analysisId, '', rows.length, now());
+  const packageId = Number(r.lastInsertRowid);
+  const path = join(dir, `claim-${slug(site.host)}-${summary.range_from}-${summary.range_to}-a${analysisId}-p${packageId}.zip`);
+  try {
+    writeFileSync(path, writeZip(entries));
+  } catch (e) {
+    d.prepare('DELETE FROM packages WHERE id = ?').run(packageId);
+    throw e;
+  }
+  d.prepare('UPDATE packages SET path = ? WHERE id = ?').run(path, packageId);
+  return { path, rows: rows.length, package_id: packageId };
 }

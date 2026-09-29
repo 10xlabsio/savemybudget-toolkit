@@ -1,5 +1,5 @@
 import { Layout, Dot, healthOf, Rel, Csrf } from './layout.js';
-import { COUNTRIES } from '../ui.js';
+import { COUNTRIES, displayHost } from '../ui.js';
 import type { Notification } from '../jobs/index.js';
 import type { Site } from '../types.js';
 
@@ -26,8 +26,8 @@ export function SitesPage(p: { nonce: string; sites: Site[]; rows: SiteRow[]; no
             <tbody>
               {p.rows.map(({ site, beacons24h, flagged7d }) => (
                 <tr>
-                  <td><a href={`/sites/${site.id}`}>{site.name}</a></td>
-                  <td class="mono">{site.host}</td>
+                  <td class="wrap"><a href={`/sites/${site.id}`}>{site.name}</a></td>
+                  <td class="mono wrap">{displayHost(site.host)}</td>
                   <td><Dot h={healthOf(site)} /> {healthLabel(site)}</td>
                   <td><Rel iso={site.last_seen_at} /></td>
                   <td class="num">{beacons24h}</td>
@@ -70,10 +70,10 @@ export function SiteFormPage(p: SiteFormProps) {
       <form method="post" action={editing ? `/api/sites/${p.site!.id}` : '/api/sites'} class="card">
         <Csrf token={p.csrf} />
         <label for="name">Name</label>
-        <input type="text" id="name" name="name" value={v.name} required maxlength={80} placeholder="Acme Shoes" />
+        <input type="text" id="name" name="name" value={v.name} required maxlength={60} placeholder="Acme Shoes" />
         <label for="host">Hostname</label>
-        <input type="text" id="host" name="host" value={v.host} required maxlength={253} placeholder="shop.yourbrand.com" inputmode="url" autocapitalize="off" spellcheck={false} />
-        <p class="hint">Just the hostname, without https:// or a path.</p>
+        <input type="text" id="host" name="host" value={displayHost(v.host)} required maxlength={253} placeholder="shop.yourbrand.com" inputmode="url" autocapitalize="off" spellcheck={false} />
+        <p class="hint">Just the hostname, without https:// or a path. Accented names (münchen-shop.de) are fine; they are stored in their DNS (punycode) form.</p>
         <label for="target_countries">Targeting countries</label>
         <select id="target_countries" name="target_countries" multiple>
           {COUNTRIES.map(([code, name]) => <option value={code} selected={v.target_countries.includes(code)}>{name} ({code})</option>)}

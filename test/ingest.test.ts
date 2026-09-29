@@ -186,6 +186,50 @@ describe('ingest', () => {
     assert.equal(p.sample[0].campaign, 'Café');
   });
 
+  it('F2: a CSV with unknown headers comes back as format csv with the headers, so the mapping form can be shown; mapping then makes it importable', () => {
+    const lines = ['When,Addr,ClickRef,Agent'];
+    for (let i = 0; i < 25; i++) lines.push(`2026-09-21T09:00:${String(i).padStart(2, '0')}Z,203.0.113.${i + 1},${gclid(i)},"${UA}"`);
+    const buf = Buffer.from(lines.join('\n'));
+    const p = analyzeUpload(buf, 'renamed.csv', OPTS);
+    assert.equal(p.ok, false);
+    assert.equal(p.format, 'csv');
+    assert.match(p.errors[0].message, /missing required columns: timestamp, ip, gclid/);
+    assert.deepEqual(p.headers, ['When', 'Addr', 'ClickRef', 'Agent']);
+    assert.deepEqual(p.missing, ['timestamp', 'ip', 'gclid']);
+    assert.deepEqual(p.unmapped_headers, ['When', 'Addr', 'ClickRef']); // Agent auto-maps to user_agent
+    assert.deepEqual(p.mapping, { user_agent: 'Agent' });
+    assert.equal(p.rows_total, 0);
+    const mapped = analyzeUpload(buf, 'renamed.csv', { ...OPTS, mapping: { timestamp: 'When', ip: 'Addr', gclid: 'ClickRef' } });
+    assert.equal(mapped.ok, true, JSON.stringify(mapped.errors));
+    assert.equal(mapped.rows_usable, 25);
+    assert.equal(mapped.sample[0].ua, UA);
+    // a partial mapping still reports what is missing
+    const half = analyzeUpload(buf, 'renamed.csv', { ...OPTS, mapping: { timestamp: 'When', ip: 'Addr' } });
+    assert.equal(half.ok, false);
+    assert.deepEqual(half.missing, ['gclid']);
+  });
+
+  it('F9: zip / xlsx bytes get the workbook message, not the generic binary one', () => {
+    const zip = analyzeUpload(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0x08]), 'clicks.xlsx', OPTS);
+    assert.match(zip.errors[0].message, /Zip and Excel workbooks are not supported/);
+    const zipAsCsv = analyzeUpload(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0x08]), 'clicks.csv', OPTS);
+    assert.match(zipAsCsv.errors[0].message, /Zip and Excel workbooks/);
+    const pdf = analyzeUpload(Buffer.from('%PDF-1.4\n\x00\x00'), 'x.pdf', OPTS);
+    assert.match(pdf.errors[0].message, /not a text file/);
+    const other = analyzeUpload(Buffer.from([1, 2, 0, 3]), 'x.bin', OPTS);
+    assert.match(other.errors[0].message, /binary file/);
+  });
+
+  it('M2: a .gz that inflates past the upload limit is refused with a clear message', () => {
+    const bomb = gzipSync(Buffer.alloc(3 * 1048576, 0x61)); // 3 MB of "a" -> a few KB gzipped
+    assert.ok(bomb.length < 20_000);
+    const p = analyzeUpload(bomb, 'big.log.gz', { ...OPTS, maxUploadMb: 1 });
+    assert.equal(p.ok, false);
+    assert.match(p.errors[0].message, /Decompressed, the file exceeds 1 MB/);
+    const fine = analyzeUpload(gzipSync(Buffer.from(logLines(25))), 'access.log.gz', { ...OPTS, maxUploadMb: 1 });
+    assert.equal(fine.ok, true);
+  });
+
   it('parseUploadRows throws on a rejected upload', () => {
     assert.throws(() => parseUploadRows(template, 'click-log-template.csv', OPTS), /template/);
   });

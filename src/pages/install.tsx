@@ -105,7 +105,7 @@ render();
 })();`;
   return (
     <Layout title={`Install — ${p.site.name}`} nonce={p.nonce} sites={p.sites} active={p.site} section="sites">
-      <h1>Tag &amp; install — {p.site.name}</h1>
+      <h1 class="wrap">Tag &amp; install — {p.site.name}</h1>
       <p class="sub">Add the tag once; from then on every ad click is recorded on your own server.</p>
 
       {!p.publicUrl ? (
@@ -147,7 +147,7 @@ render();
             <button type="button" class="btn sm" id="copy-snippet">Copy</button>
           </div>
           <p class="where"><b>Where:</b> inside <code>&lt;head&gt;</code> on every page.</p>
-          <p class="hint mono">SDK {SDK_BUILD.sdk_version} · build {SDK_BUILD.build} · SRI {SDK_BUILD.sri}</p>
+          <p class="hint mono brk">SDK {SDK_BUILD.sdk_version} · build {SDK_BUILD.build} · SRI {SDK_BUILD.sri}</p>
           <p class="hint">The key is public by design: it identifies the site and grants access to nothing. The tag talks only to {p.publicUrl}.</p>
         </div>
       ) : null}

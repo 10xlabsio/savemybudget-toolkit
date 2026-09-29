@@ -13,12 +13,12 @@ import { loadAnalysis } from './rules/index.js';
 import { checkWindow } from './claim/index.js';
 import * as telemetry from './telemetry/index.js';
 import {
-  CSRF_COOKIE, CSRF_SECRET, DATA_ASSETS_DIR, DOCS_DIR, ROOT, TEMPLATES_DIR, bytes, daysAgo, page, publicUrl, today, tz, type AppEnv, type Ctx,
+  CSRF_COOKIE, CSRF_SECRET, DATA_ASSETS_DIR, DOCS_DIR, ROOT, TEMPLATES_DIR, bytes, daysAgo, multipartCapBytes, page, parseBufferedForm, publicUrl, readBodyCapped, today, tz, type AppEnv, type Ctx,
 } from './ui.js';
 import { SetupPage } from './pages/setup.js';
 import { SiteFormPage, SitesPage, type SiteRow } from './pages/sites.js';
 import { InstallPage, SDK_BUILD } from './pages/install.js';
-import { OverviewPage, type Range } from './pages/overview.js';
+import { OverviewPage, type OverviewProps, type Range } from './pages/overview.js';
 import { UploadsPage, type UploadRow } from './pages/uploads.js';
 import { AnalysePage, type AnalysisListRow, type PackageRow } from './pages/analyse.js';
 import { SettingsPage } from './pages/settings.js';
@@ -64,12 +64,22 @@ app.use('*', async (c, next) => {
   c.set('sites', listSites());
 
   // CSRF cookie: per-process secret; readable by JS (fetch header), SameSite=Strict.
+  // Secure when the request itself is https, or when a trusted proxy in front terminated TLS.
+  const viaHttps = c.req.url.startsWith('https:') || (config.trustProxy && (c.req.header('x-forwarded-proto') ?? '').split(',')[0].trim().toLowerCase() === 'https');
   if (getCookie(c, CSRF_COOKIE) !== CSRF_SECRET) {
-    setCookie(c, CSRF_COOKIE, CSRF_SECRET, { path: '/', sameSite: 'Strict', httpOnly: false, secure: c.req.url.startsWith('https:') });
+    setCookie(c, CSRF_COOKIE, CSRF_SECRET, { path: '/', sameSite: 'Strict', httpOnly: false, secure: viaHttps });
   }
 
   const method = c.req.method;
   if (method === 'POST' || method === 'DELETE' || method === 'PUT' || method === 'PATCH') {
+    // Multipart bodies (uploads) are read here under a hard byte cap, before anything parses them.
+    // Content-Length is not trusted: a chunked request has none, so the stream itself is counted.
+    const ct = (c.req.header('content-type') ?? '').toLowerCase();
+    if (ct.includes('multipart/form-data')) {
+      const buf = await readBodyCapped(c.req.raw, multipartCapBytes());
+      if (buf === null) return c.json({ error: `The file is larger than ${config.maxUploadMb} MB. Split it, or raise SMB_MAX_UPLOAD_MB.` }, 413);
+      c.set('rawBody', buf);
+    }
     const bad = await csrfProblem(c);
     if (bad) return c.text(bad, 403);
   }
@@ -103,7 +113,10 @@ async function csrfProblem(c: Ctx): Promise<string | null> {
   let token = header;
   if (!token) {
     const ct = (c.req.header('content-type') ?? '').toLowerCase();
-    if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/form-data')) {
+    const raw = c.get('rawBody');
+    if (raw !== undefined && ct.includes('multipart/form-data')) {
+      try { const t = (await parseBufferedForm(raw, c.req.header('content-type')!))['_csrf']; if (typeof t === 'string') token = t; } catch { /* unparsable */ }
+    } else if (ct.includes('application/x-www-form-urlencoded')) {
       try {
         const b = await c.req.parseBody();
         const t = b['_csrf'];
@@ -130,7 +143,7 @@ app.get('/docs', (c) => c.redirect('/docs/getting-started', 302));
 app.get('/docs/:page', async (c) => {
   const slug = c.req.param('page').replace(/\.md$/i, '').toLowerCase();
   if (!/^[a-z0-9-]+$/.test(slug)) return c.notFound();
-  const file = slug === 'telemetry' ? join(ROOT, 'TELEMETRY.md') : join(DOCS_DIR, `${slug}.md`);
+  const file = slug === 'telemetry' ? join(ROOT, 'TELEMETRY.md') : slug === 'security' ? join(ROOT, 'SECURITY.md') : join(DOCS_DIR, `${slug}.md`);
   if (!existsSync(file)) return c.notFound();
   const md = readFileSync(file, 'utf8');
   const title = markdownTitle(md) ?? DOC_PAGES.find((d) => d.slug === slug)?.title ?? slug;
@@ -230,9 +243,19 @@ app.get('/sites/:id', (c) => {
     const r = perDayRows.find((x) => x.day === day);
     perDay.push({ day, total: r?.total ?? 0, flag: flagByDay.get(day) ?? 0 });
   }
-  const analysis = a
-    ? { id: a.id, summary: a.summary, flagged: a.scored.filter((s) => s.verdict === 'flag' && s.event.ts >= sinceIso).sort((x, y) => (x.event.ts < y.event.ts ? 1 : -1)), watch: a.summary.counts.watch }
-    : null;
+  let analysis: OverviewProps['analysis'] = null;
+  if (a) {
+    // Flagged / watch for the SELECTED range: the analysis window may be wider than the range, so join its
+    // verdicts to the events whose timestamp falls in the range rather than showing the whole-window totals.
+    const inRange = d.prepare('SELECT v.verdict AS verdict, COUNT(*) AS n FROM verdicts v JOIN events e ON e.id = v.event_id WHERE v.analysis_id = ? AND e.ts >= ? AND e.is_test = 0 GROUP BY v.verdict')
+      .all(a.id, sinceIso) as { verdict: string; n: number }[];
+    const count = (v: string) => inRange.find((r) => r.verdict === v)?.n ?? 0;
+    analysis = {
+      id: a.id, summary: a.summary,
+      flagged: a.scored.filter((s) => s.verdict === 'flag' && s.event.ts >= sinceIso).sort((x, y) => (x.event.ts < y.event.ts ? 1 : -1)),
+      flaggedInRange: count('flag'), watch: count('watch'),
+    };
+  }
   return page(c, OverviewPage({ nonce: c.get('nonce'), sites: c.get('sites'), site, notifications: activeNotifications(site.id), range, clicks: counts.n, sessions: counts.g, analysis, perDay }));
 });
 
@@ -282,9 +305,12 @@ app.get('/settings', (c) => page(c, SettingsPage({
   counters: [
     { key: 'collect_unknown_key', value: getCounter('collect_unknown_key'), what: 'Beacons that named a site key this instance does not have — usually an old snippet or a copy-paste slip.' },
     { key: 'collect_invalid', value: getCounter('collect_invalid'), what: 'Beacons that did not match the payload shape and were dropped.' },
+    { key: 'collect_bad_origin', value: getCounter('collect_bad_origin'), what: 'Beacons whose browser Origin was not the site\'s host (or a subdomain of it) and were dropped. A few can come from a staging copy of the site or a proxy that rewrites the host; a steady stream means someone is posting beacons from another site. Same-origin beacons that carry no Origin header are accepted.' },
+    { key: 'collect_ratelimited', value: getCounter('collect_ratelimited'), what: 'Beacons dropped because one address sent more than 120 in a minute.' },
     { key: 'sdk_errors', value: getCounter('sdk_errors'), what: 'Times the SDK reported an internal error from a visitor\'s browser.' },
   ],
   saved: c.req.query('saved') === '1',
+  error: c.req.query('error') === 'url' ? 'The public URL was not saved: it must start with http:// or https:// and name a host, for example https://t.yourbrand.com.' : null,
 })));
 
 app.get('/about', (c) => {

@@ -17,6 +17,8 @@ function rewriteHref(href: string): string {
   if (t) return `/templates/${t[1]}`;
   const tel = href.match(/^(?:\.\.\/)*TELEMETRY\.md(#.*)?$/);
   if (tel) return `/docs/telemetry${tel[1] ?? ''}`;
+  const sec = href.match(/^(?:\.\.\/)*SECURITY\.md(#.*)?$/);
+  if (sec) return `/docs/security${sec[1] ?? ''}`;
   return href;
 }
 

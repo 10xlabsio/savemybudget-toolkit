@@ -1,5 +1,6 @@
 /** Upload detection, preview and import (docs/inputs.md). */
 import { gunzipSync } from 'node:zlib';
+import { config } from '../config.js';
 import { db, insertEvents, now, type NewEvent } from '../db.js';
 import { enrichIp, parseUa } from '../enrich/index.js';
 import { firstLine, mapHeaders, normalizeHeader, parseCsv, sniffDelimiter, splitHeader, REQUIRED, type Delimiter } from './parse-csv.js';
@@ -23,10 +24,15 @@ export interface Preview {
   distinct_gclids: number;
   sample: ParsedRow[];
   mapping?: Record<string, string>;
+  /** Headers of the file no canonical column claimed (CSV only). */
   unmapped_headers?: string[];
+  /** Every header in the file, in order (CSV only) — what the mapping form offers. */
+  headers?: string[];
+  /** Required canonical columns the mapping did not cover (CSV only; non-empty means ok=false). */
+  missing?: string[];
 }
 
-export interface UploadOpts { retentionDays: number; mapping?: Record<string, string>; now?: Date }
+export interface UploadOpts { retentionDays: number; mapping?: Record<string, string>; now?: Date; maxUploadMb?: number }
 
 const GENERIC_MSG = 'Upload a CSV with timestamp, ip and gclid columns, or an Apache/Nginx access log.';
 const ADS_MSG = "This looks like a Google Ads export — it has no IP addresses or click IDs, so it can't be used as evidence. Use your web server log or the CSV template.";
@@ -38,18 +44,26 @@ const TEMPLATE_MSG = 'This is the template. Replace the example rows with your o
 
 interface Decoded { text: string; warnings: string[]; error?: string }
 
-function decode(buf: Buffer, filename: string): Decoded {
+function decode(buf: Buffer, filename: string, maxBytes: number): Decoded {
   const warnings: string[] = [];
   let bytes = buf;
   if (/\.gz$/i.test(filename) || (buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b)) {
-    try { bytes = gunzipSync(buf); } catch { return { text: '', warnings, error: 'The .gz file could not be decompressed.' }; }
+    // The documented upload limit is the uncompressed size; a small .gz must not be allowed to inflate without bound.
+    try {
+      bytes = gunzipSync(buf, { maxOutputLength: maxBytes });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ERR_BUFFER_TOO_LARGE') return { text: '', warnings, error: `Decompressed, the file exceeds ${Math.round(maxBytes / 1048576)} MB. Split it, or raise SMB_MAX_UPLOAD_MB.` };
+      return { text: '', warnings, error: 'The .gz file could not be decompressed.' };
+    }
   }
-  if (bytes.includes(0)) return { text: '', warnings, error: 'This is a binary file. ' + GENERIC_MSG };
-  const head = bytes.subarray(0, 64).toString('latin1').replace(/^﻿|^\xEF\xBB\xBF/, '').trimStart();
-  if (head.startsWith('{') || head.startsWith('[')) return { text: '', warnings, error: 'JSON files are not supported. ' + GENERIC_MSG };
-  if (head.startsWith('<')) return { text: '', warnings, error: 'HTML/XML files are not supported. ' + GENERIC_MSG };
+  // Magic bytes first: a zip/xlsx/PDF/PNG contains NUL bytes too, and deserves its own message.
+  const head = bytes.subarray(0, 64).toString('latin1').replace(/^\xEF\xBB\xBF/, '').trimStart();
   if (head.startsWith('PK')) return { text: '', warnings, error: 'Zip and Excel workbooks are not supported. Export as CSV instead.' };
   if (head.startsWith('%PDF') || head.startsWith('\x89PNG')) return { text: '', warnings, error: 'This is not a text file. ' + GENERIC_MSG };
+  if (bytes.includes(0)) return { text: '', warnings, error: 'This is a binary file. ' + GENERIC_MSG };
+  if (head.startsWith('{') || head.startsWith('[')) return { text: '', warnings, error: 'JSON files are not supported. ' + GENERIC_MSG };
+  if (head.startsWith('<')) return { text: '', warnings, error: 'HTML/XML files are not supported. ' + GENERIC_MSG };
 
   let text: string;
   try {
@@ -76,7 +90,7 @@ function nonEmptyLines(text: string, max: number): string[] {
 
 type Detection =
   | { format: 'log' }
-  | { format: 'csv'; delim: Delimiter; headers: string[]; mapping: Record<string, string>; unmapped: string[] }
+  | { format: 'csv'; delim: Delimiter; headers: string[]; mapping: Record<string, string>; unmapped: string[]; missing: string[] }
   | { format: null; error: string };
 
 function detect(text: string, manual?: Record<string, string>): Detection {
@@ -92,7 +106,8 @@ function detect(text: string, manual?: Record<string, string>): Detection {
   const delim = sniffDelimiter(header);
   const headers = splitHeader(header, delim);
   const { mapping, unmapped } = mapHeaders(headers, manual);
-  if (REQUIRED.every((k) => mapping[k] !== undefined)) return { format: 'csv', delim, headers, mapping, unmapped };
+  const missing = REQUIRED.filter((k) => mapping[k] === undefined);
+  if (missing.length === 0) return { format: 'csv', delim, headers, mapping, unmapped, missing };
 
   const norm = headers.map(normalizeHeader);
   const has = (s: string) => norm.includes(s);
@@ -101,10 +116,9 @@ function detect(text: string, manual?: Record<string, string>): Detection {
   if (logMatches > 0) {
     return { format: null, error: `Only ${logMatches} of the first ${lines.length} lines look like Apache/Nginx combined-format log lines. Upload the raw access log as written by the server.` };
   }
-  if (headers.length >= 2) {
-    const missing = REQUIRED.filter((k) => mapping[k] === undefined);
-    return { format: null, error: `The CSV header is missing required column${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}. Map them on the upload page or use the template.` };
-  }
+  // A CSV whose header names we don't know (When,Addr,ClickRef): still a CSV. Report it as one, with the
+  // headers, so the upload page can offer the column-mapping form; the mapping step decides what is missing.
+  if (headers.length >= 2) return { format: 'csv', delim, headers, mapping, unmapped, missing };
   return { format: null, error: GENERIC_MSG };
 }
 
@@ -191,12 +205,17 @@ function failed(format: UploadFormat | null, errors: Preview['errors'], warnings
 }
 
 function analyze(buf: Buffer, filename: string, opts: UploadOpts): { format: UploadFormat | null; rows: ParsedRow[]; preview: Preview } {
-  const dec = decode(buf, filename);
+  const dec = decode(buf, filename, (opts.maxUploadMb ?? config.maxUploadMb) * 1048576);
   if (dec.error) return { format: null, rows: [], preview: failed(null, [{ message: dec.error }], dec.warnings) };
   const warnings = [...dec.warnings];
 
   const det = detect(dec.text, opts.mapping);
   if (det.format === null) return { format: null, rows: [], preview: failed(null, [{ message: det.error }], warnings) };
+  if (det.format === 'csv' && det.missing.length) {
+    // Not importable yet: hand back the file's headers so the user can map them by hand.
+    const msg = `The CSV header is missing required column${det.missing.length > 1 ? 's' : ''}: ${det.missing.join(', ')}. Map them below or use the template.`;
+    return { format: 'csv', rows: [], preview: failed('csv', [{ message: msg }], warnings, { mapping: det.mapping, unmapped_headers: det.unmapped, headers: det.headers, missing: det.missing }) };
+  }
 
   let raw: RawRow[];
   let total: number;
@@ -208,7 +227,7 @@ function analyze(buf: Buffer, filename: string, opts: UploadOpts): { format: Upl
     if (det.delim !== ',') warnings.push(`The file is ${det.delim === ';' ? 'semicolon' : 'tab'}-separated; it was read accordingly.`);
     const ex = extractCsv(dec.text, det);
     raw = ex.raw; total = ex.total;
-    extra = { mapping: det.mapping, unmapped_headers: det.unmapped };
+    extra = { mapping: det.mapping, unmapped_headers: det.unmapped, headers: det.headers };
     if (ex.template) hardErrors.push({ message: TEMPLATE_MSG, lines: ex.templateLines });
   } else {
     const ex = extractLog(dec.text);

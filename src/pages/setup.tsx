@@ -9,7 +9,12 @@ export interface SetupProps {
 }
 
 export function SetupPage(p: SetupProps) {
-  const check = `(function(){var b=document.getElementById('chk'),o=document.getElementById('chkout'),u=document.getElementById('public_url');b.addEventListener('click',function(){o.textContent='Checking…';fetch('/api/setup/check?url='+encodeURIComponent(u.value),{headers:{'x-csrf':(document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}}).then(function(r){return r.json()}).then(function(j){o.textContent=j.ok?'✓ Reachable — the collector answered at '+j.url:'✗ '+j.reason;}).catch(function(){o.textContent='✗ The check could not run.';});});})();`;
+  const check = `(function(){var b=document.getElementById('chk'),o=document.getElementById('chkout'),u=document.getElementById('public_url');
+function csrf(){return (document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}
+b.addEventListener('click',function(){o.textContent='Checking…';
+fetch('/api/setup/check',{method:'POST',headers:{'x-csrf':csrf(),'content-type':'application/json'},body:JSON.stringify({url:u.value})}).then(function(r){return r.json()}).then(function(j){
+o.textContent=j.ok?'✓ Reachable — the collector answered at '+j.url+(j.warning?' — '+j.warning:''):'✗ '+(j.reason||j.error||'The check could not run.');
+o.className=j.ok&&j.warning?'note amber':'hint';}).catch(function(){o.className='hint';o.textContent='✗ The check could not run.';});});})();`;
   return (
     <Layout title="Set up" nonce={p.nonce} sites={p.sites}>
       <h1>Set up your toolkit</h1>

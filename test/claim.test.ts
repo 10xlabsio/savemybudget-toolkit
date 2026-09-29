@@ -124,6 +124,22 @@ describe('buildPackage', () => {
     assert.equal(readZip(readFileSync(r.path)).size, 4);
   });
 
+  it('F3: two packages for one analysis get distinct files named by package id, and each keeps its own content', async () => {
+    const a = buildPackage(analysisId);
+    const b = buildPackage(analysisId, { includeWatch: true });
+    assert.notEqual(a.path, b.path);
+    assert.match(a.path, new RegExp(`-a${analysisId}-p${a.package_id}\\.zip$`));
+    assert.match(b.path, new RegExp(`-a${analysisId}-p${b.package_id}\\.zip$`));
+    const { db } = await import('../src/db.js');
+    const rowA = db().prepare('SELECT path FROM packages WHERE id = ?').get(a.package_id) as { path: string };
+    assert.equal(rowA.path, a.path);
+    const rowsA = readZip(readFileSync(a.path)).get('evidence.csv')!.toString().split('\r\n').filter(Boolean).length - 1;
+    const rowsB = readZip(readFileSync(b.path)).get('evidence.csv')!.toString().split('\r\n').filter(Boolean).length - 1;
+    assert.equal(rowsA, a.rows);
+    assert.equal(rowsB, b.rows);
+    assert.ok(rowsB > rowsA);
+  });
+
   it('renderSummary is usable directly', () => {
     const exp = fixtureExpectations(FX);
     const { summary, scored } = runAnalysis(siteRef, exp.from, exp.to);

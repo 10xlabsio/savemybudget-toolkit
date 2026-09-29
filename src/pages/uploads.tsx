@@ -16,10 +16,13 @@ function $(id){return document.getElementById(id)}
 function csrf(){return (document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 var form=$('upform'),out=$('preview'),token=null,mapping=null;
-form.addEventListener('submit',function(ev){ev.preventDefault();send()});
-function send(){
-  var f=$('file').files[0];if(!f){out.innerHTML='<p class="note amber"><span>Choose a file first.</span></p>';return}
-  var fd=new FormData();fd.append('file',f);if(mapping)fd.append('mapping',JSON.stringify(mapping));if(token)fd.append('token',token);
+form.addEventListener('submit',function(ev){ev.preventDefault();send(false)});
+$('file').addEventListener('change',function(){token=null;mapping=null});
+function send(remap){
+  var f=$('file').files[0];if(!f&&!(remap&&token)){out.innerHTML='<p class="note amber"><span>Choose a file first.</span></p>';return}
+  var fd=new FormData();if(f)fd.append('file',f);
+  if(mapping){Object.keys(mapping).forEach(function(k){fd.append('mapping['+k+']',mapping[k])})}
+  if(token)fd.append('token',token);
   out.innerHTML='<p class="hint">Checking the file…</p>';
   fetch('/api/sites/'+SITE+'/uploads',{method:'POST',headers:{'x-csrf':csrf()},body:fd}).then(function(r){return r.json()}).then(show).catch(function(){out.innerHTML='<p class="note red"><span>The upload could not be checked. Try again.</span></p>'});
 }
@@ -28,14 +31,17 @@ function show(j){
   token=j.token;var pv=j.preview,h='';
   pv.errors.forEach(function(e){h+='<div class="note red"><div>'+esc(e.message)+(e.lines&&e.lines.length?' <span class="hint">(line'+(e.lines.length>1?'s':'')+' '+e.lines.slice(0,20).join(', ')+(e.lines.length>20?'…':'')+')</span>':'')+'</div></div>'});
   pv.warnings.forEach(function(w){h+='<div class="note amber"><div>'+esc(w)+'</div></div>'});
-  if(pv.unmapped_headers&&pv.unmapped_headers.length&&!pv.ok){
-    var canon=['timestamp','ip','gclid','user_agent','url','referer','campaign'];var heads=(pv.unmapped_headers||[]).concat(Object.keys(pv.mapping||{}).map(function(k){return pv.mapping[k]}));
-    h+='<div class="card tight"><h3>Map the columns</h3><p class="hint">Some headers were not recognised. Tell the toolkit which column is which, then check again.</p>';
-    canon.forEach(function(c){h+='<label for="map-'+c+'">'+c+(c==='timestamp'||c==='ip'||c==='gclid'?' (required)':'')+'</label><select id="map-'+c+'" data-canon="'+c+'"><option value="">— not present —</option>';
+  var heads=pv.headers||(pv.unmapped_headers||[]).concat(Object.keys(pv.mapping||{}).map(function(k){return pv.mapping[k]}));
+  var needMap=pv.format==='csv'&&!pv.ok&&!!(pv.missing&&pv.missing.length);
+  var offerMap=needMap||(pv.format==='csv'&&!pv.ok&&!!(pv.unmapped_headers&&pv.unmapped_headers.length));
+  if(offerMap){
+    var canon=['timestamp','ip','gclid','user_agent','url','referer','campaign'];
+    h+='<form class="card tight" id="mapform"><h3>Map the columns</h3><p class="hint">Some headers were not recognised. Tell the toolkit which column of the file is which, then check again.</p>';
+    canon.forEach(function(c){h+='<label for="map-'+c+'">'+c+(c==='timestamp'||c==='ip'||c==='gclid'?' (required)':'')+'</label><select id="map-'+c+'" name="mapping['+c+']" data-canon="'+c+'"><option value="">— not present —</option>';
       heads.forEach(function(hd){h+='<option value="'+esc(hd)+'"'+((pv.mapping||{})[c]===hd?' selected':'')+'>'+esc(hd)+'</option>'});h+='</select>'});
-    h+='<p style="margin-top:12px"><button type="button" class="btn" id="remap">Check again</button></p></div>';
+    h+='<p style="margin-top:12px"><button type="submit" class="btn pri" id="remap">Check again with this mapping</button></p></form>';
   }
-  if(pv.format){
+  if(pv.format&&!needMap){
     h+='<div class="grid4">'+kpi('Format',pv.format==='log'?'Access log':'CSV')+kpi('Rows in file',pv.rows_total)+kpi('Usable rows',pv.rows_usable)+kpi('Date range',pv.range_from?esc(pv.range_from)+' → '+esc(pv.range_to):'—')+'</div>';
     h+='<div class="grid4">'+kpi('Distinct IPs',pv.distinct_ips)+kpi('Distinct click IDs',pv.distinct_gclids)+'</div>';
     var dr=pv.dropped||{},dk=Object.keys(dr).filter(function(k){return dr[k]>0});
@@ -45,7 +51,7 @@ function show(j){
   }
   if(pv.ok&&token){h+='<p><button type="button" class="btn pri" id="import">Import '+pv.rows_usable+' rows</button></p>'}
   out.innerHTML=h;
-  var rm=$('remap');if(rm)rm.addEventListener('click',function(){mapping={};document.querySelectorAll('[data-canon]').forEach(function(s){if(s.value)mapping[s.getAttribute('data-canon')]=s.value});send()});
+  var mf=$('mapform');if(mf)mf.addEventListener('submit',function(ev){ev.preventDefault();mapping={};document.querySelectorAll('[data-canon]').forEach(function(s){if(s.value)mapping[s.getAttribute('data-canon')]=s.value});send(true)});
   var im=$('import');if(im)im.addEventListener('click',function(){im.disabled=true;im.textContent='Importing…';
     fetch('/api/sites/'+SITE+'/uploads/'+encodeURIComponent(token)+'/import',{method:'POST',headers:{'x-csrf':csrf(),'content-type':'application/json'},body:JSON.stringify({mapping:mapping})}).then(function(r){return r.json()}).then(function(j){
       if(j.error){out.innerHTML='<p class="note red"><span>'+esc(j.error)+'</span></p>';return}

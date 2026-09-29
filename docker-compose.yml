@@ -1,0 +1,33 @@
+services:
+  toolkit:
+    image: ghcr.io/10xlabsio/savemybudget-toolkit:1
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SMB_BIND: 0.0.0.0
+      SMB_TRUST_PROXY: "1"
+      # Uncomment to disable anonymous usage counts (see TELEMETRY.md):
+      # SMB_TELEMETRY: "off"
+    volumes:
+      - smb-data:/data
+    ports:
+      # Web UI, loopback only. Reach it over an SSH tunnel; see docs/getting-started.md.
+      - "127.0.0.1:8080:8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - toolkit
+
+volumes:
+  smb-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,54 @@
+# Hosting / datacenter networks. One per line: ASN<TAB>operator. Lines starting with # are ignored.
+# Keep to networks that are hosting-only. Contributions: include a source link in the PR.
+16509	Amazon AWS
+14618	Amazon AWS
+15169	Google Cloud
+396982	Google Cloud
+8075	Microsoft Azure
+14061	DigitalOcean
+24940	Hetzner
+213230	Hetzner
+16276	OVH
+63949	Akamai / Linode
+20473	Vultr
+31898	Oracle Cloud
+45102	Alibaba Cloud
+37963	Alibaba Cloud
+132203	Tencent Cloud
+51167	Contabo
+40021	Contabo
+12876	Scaleway
+60781	Leaseweb
+28753	Leaseweb
+9009	M247
+212238	Datacamp
+174	Cogent (transit / hosting)
+46606	Unified Layer / Bluehost
+26496	GoDaddy hosting
+19551	Incapsula
+54113	Fastly
+20940	Akamai
+36351	SoftLayer / IBM Cloud
+55286	Server Mania
+25820	IT7 / Psychz
+35916	MultaCom
+30633	Leaseweb US
+3842	Rackspace
+33070	Rackspace
+19318	Interserver
+32475	SingleHop
+53667	FranTech / BuyVM
+64200	Vivid Hosting
+396356	Latitude.sh
+62240	Clouvider
+199524	G-Core
+202425	IP Volume
+42831	UK Servers
+29802	Hivelocity
+18779	EGIhosting
+47583	Hostinger
+7203	Hostinger
+50673	Serverius
+49981	WorldStream
+39572	Advania
+201814	Melbikomas

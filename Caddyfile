@@ -1,0 +1,13 @@
+# Replace t.example.com with the subdomain in SMB_PUBLIC_URL.
+# Only the collector and the SDK are public. The UI stays on the host's loopback.
+t.example.com {
+    handle /collect* {
+        reverse_proxy toolkit:8080
+    }
+    handle /sdk/* {
+        reverse_proxy toolkit:8080
+    }
+    handle {
+        respond 404
+    }
+}

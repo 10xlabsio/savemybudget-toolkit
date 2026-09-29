@@ -1,0 +1,32 @@
+{
+  "name": "@savemybudget/toolkit",
+  "version": "1.0.0",
+  "description": "Self-hosted evidence collection for Google Ads invalid-click claims",
+  "license": "Apache-2.0",
+  "author": "Ivo Kostadinov, founder of SaveMyBudget.io, part of 10xlabs",
+  "repository": "github:10xlabsio/savemybudget-toolkit",
+  "type": "module",
+  "bin": {
+    "smb-toolkit": "dist/server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "dev": "tsx watch src/server.ts",
+    "start": "node --no-warnings=ExperimentalWarning dist/server.js",
+    "test": "node --test --import tsx test/*.test.ts",
+    "fixtures": "tsx src/rules/fixtures.ts",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "@hono/node-server": "^1.13.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.7.0"
+  }
+}

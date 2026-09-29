@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/10xlabsio/savemybudget-sdk/schema/beacon.v1.json",
+  "title": "SaveMyBudget SDK beacon payload v1",
+  "description": "Mirrors src/types.ts BeaconPayload in the SDK repo. Posted as text/plain JSON to <endpoint>/v1/beacon.",
+  "type": "object",
+  "required": ["v", "t", "c", "s", "ts", "url", "ref", "gclid", "gbraid", "wbraid", "sdkv"],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "const": 1 },
+    "t": { "enum": ["load", "ping", "unload"] },
+    "c": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "s": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "ts": { "type": "integer" },
+    "url": { "type": "string", "maxLength": 4096 },
+    "ref": { "type": "string", "maxLength": 4096 },
+    "gclid": { "type": ["string", "null"], "maxLength": 256 },
+    "gbraid": { "type": ["string", "null"], "maxLength": 256 },
+    "wbraid": { "type": ["string", "null"], "maxLength": 256 },
+    "qp": { "type": "object", "additionalProperties": { "type": "string", "maxLength": 512 } },
+    "qk": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 64 },
+    "fp": {
+      "type": "object",
+      "properties": {
+        "screen": { "type": "string" }, "tz": { "type": "string" }, "lang": { "type": "string" },
+        "langs": { "type": "integer" }, "platform": { "type": "string" }, "cores": { "type": "number" },
+        "mem": { "type": "number" }, "touch": { "type": "integer" }, "canvas": { "type": "string" },
+        "webgl": { "type": "string" }, "fonts": { "type": "string" }
+      }
+    },
+    "fph": { "type": "string", "maxLength": 64 },
+    "auto": {
+      "type": "object",
+      "properties": {
+        "wd": { "type": "boolean" }, "hc": { "type": "boolean" }, "pl": { "type": "integer" },
+        "ln": { "type": "integer" }, "ch": { "type": "boolean" }, "ow": { "type": "boolean" }, "cdp": { "type": "boolean" }
+      }
+    },
+    "beh": {
+      "type": "object",
+      "properties": {
+        "mm": { "type": "integer" }, "sc": { "type": "integer" }, "tc": { "type": "integer" },
+        "cl": { "type": "integer" }, "kd": { "type": "integer" }, "fi": { "type": "integer" }, "md": { "type": "number" }
+      }
+    },
+    "dwell": { "type": "number" },
+    "sdkv": { "type": "string", "maxLength": 32 }
+  }
+}

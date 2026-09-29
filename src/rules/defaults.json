@@ -1,0 +1,18 @@
+{
+  "score_threshold": 70,
+  "min_layers": 2,
+  "watch_score": 30,
+  "hard_weight": 100,
+  "rules": {
+    "r1_hosting_asn": { "kind": "hard", "weight": 100 },
+    "r3_geo": { "kind": "hard", "weight": 100 },
+    "r4_subnet_cluster": { "kind": "soft", "weight": 35, "min_ips": 5, "window_min": 15, "dampen_ua_families": 5 },
+    "r6_automation": { "kind": "hard", "weight": 100 },
+    "r8_fp_collision": { "kind": "soft", "weight": 40, "min_ips": 5, "window_hours": 24 },
+    "r9_no_beacon": { "kind": "hard", "weight": 100, "match_window_min": 30, "guard_ratio_of_median": 0.5, "guard_ratio_absolute": 0.2, "downgraded_weight": 40 },
+    "r10_zero_dwell": { "kind": "soft", "weight": 30, "max_dwell_ms": 2000 },
+    "r11_dead_session": { "kind": "soft", "weight": 30, "min_dwell_ms": 2000 },
+    "r13_gclid_replay": { "kind": "hard", "weight": 100, "min_sightings": 2, "pair_window_min": 30, "max_age_hours": 24 },
+    "r14_ip_velocity": { "kind": "soft", "weight": 40, "short_window_min": 15, "short_min": 3, "long_window_hours": 24, "long_min": 5, "cgnat_ua_families": 5 }
+  }
+}

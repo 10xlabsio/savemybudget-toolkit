@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import type { Child } from 'hono/jsx';
 import { config } from '../config.js';
 import { siteHealth, type Health } from '../db.js';

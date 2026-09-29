@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { Layout, Dot, healthOf, Rel, Csrf } from './layout.js';
 import { COUNTRIES, displayHost } from '../ui.js';
 import type { Notification } from '../jobs/index.js';

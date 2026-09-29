@@ -1,1 +1,2 @@
+/* SPDX-License-Identifier: Apache-2.0 — Copyright 2026 10xlabs — SaveMyBudget Toolkit self-host stub (ES5, do not modernise) */
 (function(n,t){try{if(n.smb)return;var r=function(){try{r.q.push(Array.prototype.slice.call(arguments))}catch(u){}};r.q=[],n.smb=r;if(!n.__smbSdkUrl)return;var e=t.createElement("script");e.async=!0,e.src=n.__smbSdkUrl,e.crossOrigin="anonymous";var s=t.head||t.documentElement;s&&s.appendChild(e)}catch(u){}})(window,document);

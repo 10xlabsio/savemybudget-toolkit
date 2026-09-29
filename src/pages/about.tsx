@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { Layout } from './layout.js';
 import { config, CREDIT } from '../config.js';
 import { RULES } from '../rules/index.js';

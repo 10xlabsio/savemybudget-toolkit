@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Tiny Markdown → HTML converter for docs/*.md and TELEMETRY.md. Escapes first; supports what the docs use. */
 
 export function escapeHtml(s: string): string {

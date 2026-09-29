@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** JSON / form API. Mutations carry CSRF (checked in app.ts middleware). Forms use PRG. */
 import { randomBytes } from 'node:crypto';
 import { promises as dns } from 'node:dns';

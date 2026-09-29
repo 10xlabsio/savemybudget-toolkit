@@ -40,3 +40,14 @@ Issues and PRs are triaged weekly. A first response within a week is the aim; co
 ## Licence
 
 By contributing you agree that your contributions are licensed under the Apache License 2.0, the same as the project.
+
+## File headers
+
+Every source file starts with an SPDX header:
+
+```
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
+```
+
+Keep it on new files. Contributions are licensed under Apache-2.0 with copyright retained by the contributor; the header names the project, not the author of each line.

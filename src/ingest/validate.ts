@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Row-level validation shared by the CSV and log paths (docs/inputs.md "Validation"). */
 import { isIP } from 'node:net';
 import { isPrivateIp } from '../enrich/index.js';

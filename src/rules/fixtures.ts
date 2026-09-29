@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /**
  * Deterministic synthetic click window for tests and demos.
  * `tsx src/rules/fixtures.ts` inserts one into a site named 'Fixture site' in the real DB.

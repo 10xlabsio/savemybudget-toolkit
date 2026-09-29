@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Inline SVG per-day chart: bars for total clicks with a flagged overlay. Server-rendered, no script. */
 import { escapeHtml } from './markdown.js';
 

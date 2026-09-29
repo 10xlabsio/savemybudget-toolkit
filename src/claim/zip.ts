@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Minimal ZIP writer/reader (STORE method only, CRC-32). Node built-ins only. */
 
 const CRC_TABLE = (() => {

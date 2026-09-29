@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Builds the Hono app: public routes (collector, SDK, healthz) first; then the UI with security headers + CSRF. */
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';

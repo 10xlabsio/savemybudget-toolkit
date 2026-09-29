@@ -1,4 +1,6 @@
 #!/usr/bin/env -S node --no-warnings=ExperimentalWarning
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { app } from './app.js';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { readFileSync } from 'node:fs';
 import { db, eventById, eventsInWindow, now } from '../db.js';
 import { subnet24 } from '../enrich/index.js';

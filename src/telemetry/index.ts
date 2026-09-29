@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { randomUUID } from 'node:crypto';
 import { db, getSetting, now } from '../db.js';
 import { config } from '../config.js';

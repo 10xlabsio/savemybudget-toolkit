@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Shared UI plumbing: env type, CSRF secret, public URL, formatting helpers, static lists. */
 import { randomBytes } from 'node:crypto';
 import { domainToASCII, domainToUnicode, fileURLToPath } from 'node:url';

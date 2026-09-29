@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { Layout, Kpi, RuleChip, Csrf } from './layout.js';
 import { perDayChart } from './svg.js';
 import { config, TERMS_SENTENCE } from '../config.js';

@@ -241,9 +241,11 @@ export function eventsByClickId(siteId: number, stored: string): ClickEvent[] {
   return (db().prepare('SELECT * FROM events WHERE site_id = ? AND gclid = ? AND is_test = 0 ORDER BY ts').all(siteId, stored) as any[]).map(rowToEvent);
 }
 
-/** Non-test events on a site from one IP between two ISO instants, inclusive. Uses ix_events_site_ip. */
-export function eventsByIp(siteId: number, ip: string, fromIso: string, toIso: string): ClickEvent[] {
-  return (db().prepare('SELECT * FROM events WHERE site_id = ? AND ip = ? AND ts >= ? AND ts <= ? AND is_test = 0 ORDER BY ts').all(siteId, ip, fromIso, toIso) as any[]).map(rowToEvent);
+/** Non-test events on a site from any of the given IP spellings between two ISO instants, inclusive. Uses ix_events_site_ip. */
+export function eventsByIp(siteId: number, ips: string[], fromIso: string, toIso: string): ClickEvent[] {
+  if (!ips.length) return [];
+  const sql = `SELECT * FROM events WHERE site_id = ? AND ip IN (${ips.map(() => '?').join(',')}) AND ts >= ? AND ts <= ? AND is_test = 0 ORDER BY ts`;
+  return (db().prepare(sql).all(siteId, ...ips, fromIso, toIso) as any[]).map(rowToEvent);
 }
 
 export function eventById(id: number): ClickEvent | null {

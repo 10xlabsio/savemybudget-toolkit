@@ -10,7 +10,6 @@
  */
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
-import { isIP } from 'node:net';
 import { domainToASCII } from 'node:url';
 import { config } from '../config.js';
 import { db, getSite, listSites, siteHealth, siteStatus } from '../db.js';
@@ -21,7 +20,7 @@ import { activeNotifications, silentThresholdHours } from '../jobs/index.js';
 import * as telemetry from '../telemetry/index.js';
 import type { AnalysisSummary, RuleHit, ScoredEvent, Site } from '../types.js';
 import { analyse, type Analysis } from './analyse.js';
-import { LEAD_FIELDS, MAX_LEADS, matchLeads, parseLead } from './leads.js';
+import { LEAD_FIELDS, MAX_LEADS, canonicalIp, ipVariants, matchLeads, parseLead } from './leads.js';
 
 export class ToolError extends Error {}
 
@@ -83,8 +82,7 @@ export function parseWindow(args: Record<string, unknown>, now: Date, required =
   if (required && (f === undefined || t === undefined)) throw new ToolError('from and to are both required, as dates like 2026-09-01.');
   if (f !== undefined && !isDay(f)) throw new ToolError('from must be a date like 2026-09-01.');
   if (t !== undefined && !isDay(t)) throw new ToolError('to must be a date like 2026-09-01.');
-  let to = (t as string | undefined) ?? (f !== undefined ? addDays(f as string, DEFAULT_WINDOW_DAYS - 1) : today);
-  if (t === undefined && to > today) to = today;
+  const to = (t as string | undefined) ?? today;
   const from = (f as string | undefined) ?? addDays(to, -(DEFAULT_WINDOW_DAYS - 1));
   if (to > today) throw new ToolError(`to cannot be in the future (today is ${today}, UTC).`);
   if (from > to) throw new ToolError('from must be on or before to.');
@@ -171,7 +169,7 @@ const VERDICTS_DOC = '"flag" = the rules say invalid; "watch" = suspicious, wort
 
 const SITE_ARG = { site_id: { type: ['integer', 'string'], maxLength: 253, description: 'Site id from list_sites, or the site\'s host (e.g. shop.example).' } };
 const WINDOW_ARGS = {
-  from: { type: 'string', maxLength: 10, description: 'First day, YYYY-MM-DD (UTC). Default: 6 days before `to`.' },
+  from: { type: 'string', maxLength: 10, description: 'First day, YYYY-MM-DD (UTC). Default: 6 days before `to` (a 7-day window).' },
   to: { type: 'string', maxLength: 10, description: 'Last day, YYYY-MM-DD (UTC), inclusive. Default: today. At most 90 days in total.' },
 };
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -359,17 +357,19 @@ export const TOOLS: ToolDef[] = [
     kind: 'read', idempotent: true, siteScoped: true,
     handler(args, ctx) {
       const site = siteOf(ctx);
-      let ip = String(args.ip).trim().replace(/^\[|\]$/g, '');
-      if (ip.toLowerCase().startsWith('::ffff:') && isIP(ip.slice(7)) === 4) ip = ip.slice(7);
-      if (!isIP(ip)) throw new ToolError('ip is not a valid IP address.');
+      const ip = canonicalIp(String(args.ip));
+      if (!ip) throw new ToolError('ip is not a valid IP address.');
+      const variants = ipVariants(String(args.ip));
       const today = dayOf(ctx.now);
       const sinceDay = addDays(today, -(MAX_WINDOW_DAYS - 1));
-      const rows = db().prepare('SELECT id, ts FROM events WHERE site_id = ? AND ip = ? AND ts >= ? AND is_test = 0 ORDER BY ts').all(site.id, ip, `${sinceDay}T00:00:00.000Z`) as { id: number; ts: string }[];
+      const rows = db().prepare(`SELECT id, ts FROM events WHERE site_id = ? AND ip IN (${variants.map(() => '?').join(',')}) AND ts >= ? AND is_test = 0 ORDER BY ts`)
+        .all(site.id, ...variants, `${sinceDay}T00:00:00.000Z`) as { id: number; ts: string }[];
       if (!rows.length) throw new ToolError('That IP has not been seen on this site in the last 90 days.');
       const w: Window = { from: rows[0].ts.slice(0, 10), to: rows[rows.length - 1].ts.slice(0, 10), days: 0 };
       w.days = Math.round((Date.parse(w.to) - Date.parse(w.from)) / DAY_MS) + 1;
       const a = analyse(site, w.from, w.to, ctx.now.getTime());
-      const mine = a.scored.filter((s) => s.event.ip === ip);
+      const ids = new Set(rows.map((r) => r.id));
+      const mine = a.scored.filter((s) => ids.has(s.event.id));
       const count = (m: Map<string, number>, k: string | null) => { if (k) m.set(k, (m.get(k) ?? 0) + 1); };
       const families = new Map<string, number>(), rules = new Map<string, number>(), sources = new Map<string, number>();
       for (const s of mine) { count(families, s.event.ua_family); count(sources, s.event.source); for (const h of s.hits) count(rules, h.rule); }
@@ -388,7 +388,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'match_leads',
     title: 'Match CRM leads to clicks',
-    description: 'Check CRM leads against the clicks recorded for one site. For each lead send lead_id plus whatever you have of: gclid (or gbraid / wbraid), ip, submitted_at (ISO 8601), landing_url. Any ONE key is enough. Matching order: click id (exact; also read from landing_url) → the lead\'s IP within 30 minutes of submitted_at → utm_* on landing_url to break ties. NEVER send names, emails, phone numbers or message text — they are rejected. Returns per lead: match_basis (click_id | ip_time | ambiguous | none), the matched click\'s event_id and time, verdict (flag | watch | allow | no_match), score, the rules that fired and a reason. Max 200 leads per call.',
+    description: 'Check CRM leads against the clicks recorded for one site. For each lead send lead_id plus whatever you have of: gclid (or gbraid / wbraid), ip, submitted_at (ISO 8601), landing_url. Any ONE key is enough. Matching order: click id (exact; also read from landing_url) → the lead\'s IP within 30 minutes of submitted_at (clicks before the submission first; among those a utm_* match with landing_url, then the latest). NEVER send names, emails, phone numbers or message text — they are rejected. Returns per lead: match_basis (click_id | ip_time | ambiguous | none), the matched click\'s event_id and time, verdict (flag | watch | allow | no_match), score, the rules that fired and a reason. Max 200 leads per call.',
     inputSchema: obj({
       ...SITE_ARG,
       leads: {
@@ -456,7 +456,8 @@ export const TOOLS: ToolDef[] = [
       const left = (day: string) => Math.max(0, config.claimWindowDays - Math.round((Date.parse(today) - Date.parse(day)) / DAY_MS));
       return {
         ...envelope(site, undefined, w), ok: r.ok, ...(r.message ? { message: r.message } : {}), ...(r.warning ? { warning: r.warning } : {}),
-        claim_window_days: config.claimWindowDays, earliest_filable_day: addDays(today, -config.claimWindowDays),
+        // checkWindow's limit is now − 60 days as an instant, so the first whole day inside it is today − 59.
+        claim_window_days: config.claimWindowDays, earliest_filable_day: addDays(today, -(config.claimWindowDays - 1)),
         days_left_for_first_day: left(w.from), days_left_for_last_day: left(w.to),
       };
     },
@@ -498,21 +499,27 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'run_analysis',
     title: 'Save an analysis',
-    description: 'Run the rules over a window for one site and SAVE the result, the same as Analyse → Run on the toolkit UI — needed before build_claim_package. If the same window was saved in the last 24 hours that analysis is returned instead (reused: true); pass force: true to run it again (e.g. after importing more logs). Refuses windows that lie wholly outside Google\'s claim window.',
-    inputSchema: obj({ ...SITE_ARG, ...WINDOW_ARGS, force: { type: 'boolean', description: 'Run again even if this window was saved in the last 24 hours.' } }, ['site_id', 'from', 'to']),
+    description: 'Run the rules over a window for one site and SAVE the result, the same as Analyse → Run on the toolkit UI — needed before build_claim_package. If the same window was saved in the last 24 hours and the data hasn\'t changed since (same counts), that analysis is returned instead (reused: true) so repeated calls don\'t pile up copies; force: true always saves a new one. Refuses windows that lie wholly outside Google\'s claim window.',
+    inputSchema: obj({ ...SITE_ARG, ...WINDOW_ARGS, force: { type: 'boolean', description: 'Save a new analysis even if an identical one was saved in the last 24 hours.' } }, ['site_id', 'from', 'to']),
     kind: 'action', idempotent: true, siteScoped: true,
     handler(args, ctx) {
       const site = siteOf(ctx);
       const w = parseWindow(args, ctx.now, true);
       const check = checkWindow(w.from, w.to, ctx.now);
       if (!check.ok) throw new ToolError(check.message ?? 'That window cannot be analysed.');
+      const result = runAnalysis(site, w.from, w.to);
       if (!bool(args.force, false)) {
+        // Reuse only an analysis that still describes the data: an import, a deletion or a targeting change
+        // since it ran changes the counts, and then a new one is saved.
         const since = new Date(ctx.now.getTime() - DAY_MS).toISOString();
         const prev = db().prepare('SELECT id, ran_at, summary FROM analyses WHERE site_id = ? AND range_from = ? AND range_to = ? AND ran_at >= ? ORDER BY id DESC LIMIT 1')
           .get(site.id, w.from, w.to, since) as { id: number; ran_at: string; summary: string } | undefined;
-        if (prev) return { ...envelope(site, undefined, w), analysis_id: prev.id, reused: true, ran_at: prev.ran_at, ...(check.warning ? { warning: check.warning } : {}), ...summaryShape(JSON.parse(prev.summary) as AnalysisSummary) };
+        const same = (x: AnalysisSummary, y: AnalysisSummary) => JSON.stringify([x.counts, x.rules]) === JSON.stringify([y.counts, y.rules]);
+        if (prev) {
+          const saved = JSON.parse(prev.summary) as AnalysisSummary;
+          if (same(saved, result.summary)) return { ...envelope(site, undefined, w), analysis_id: prev.id, reused: true, ran_at: prev.ran_at, sources: saved.counts.sources, ...(check.warning ? { warning: check.warning } : {}), ...summaryShape(saved) };
+        }
       }
-      const result = runAnalysis(site, w.from, w.to);
       const id = saveAnalysis(site, result);
       const s = result.summary;
       telemetry.track('analysis_run', {

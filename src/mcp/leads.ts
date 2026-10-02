@@ -8,12 +8,13 @@
  *  1. click id — gclid (or gbraid / wbraid), sent or read from landing_url. gbraid/wbraid identify a campaign
  *     and day on iOS rather than one click, so they match only when every hit is one visitor (one IP).
  *  2. IP + time — a click from the lead's IP within 30 minutes of submitted_at. Clicks that started before the
- *     submission win (latest first); then utm_* agreement with landing_url; then nearest in time.
+ *     submission win; among those, one whose utm_* agree with landing_url, then the latest; otherwise the nearest.
  *  3. otherwise no_match, with the reason, so the agent can say which field to add to the form.
  * Verdicts come from one analysis over the days the matched clicks fall on (± 1 day), cached.
  */
 import { isIP } from 'node:net';
 import { eventsByClickId, eventsByIp } from '../db.js';
+import { parseTimestamp } from '../ingest/validate.js';
 import type { ClickEvent, ScoredEvent, Site } from '../types.js';
 import { analyse } from './analyse.js';
 
@@ -50,8 +51,35 @@ export interface LeadResult {
 
 const s = (v: unknown, max: number): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
 
-function stripMapped(ip: string): string {
-  return ip.toLowerCase().startsWith('::ffff:') && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
+/**
+ * One spelling per address: IPv4 dotted; IPv6 lower-case and compressed; IPv4-mapped IPv6 (::ffff:1.2.3.4 or
+ * ::ffff:102:304) as plain IPv4. Null if it isn't an IP.
+ */
+export function canonicalIp(raw: string): string | null {
+  let ip = raw.trim().replace(/^\[|\]$/g, '').toLowerCase();
+  const v = isIP(ip);
+  if (v === 0) return null;
+  if (v === 6) {
+    try { ip = new URL(`http://[${ip}]/`).hostname.slice(1, -1); } catch { return null; }
+    const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+    const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
+    if (dotted) ip = dotted[1];
+    else if (hex) { const hi = parseInt(hex[1], 16), lo = parseInt(hex[2], 16); ip = `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`; }
+  }
+  return ip;
+}
+
+/**
+ * The spellings an address may have been stored under: the collector strips IPv4-mapped prefixes, but log and
+ * CSV imports keep whatever the file had. Lookups use all of them so the (site, ip, ts) index still applies.
+ */
+export function ipVariants(raw: string): string[] {
+  const c = canonicalIp(raw);
+  if (!c) return [];
+  const out = new Set([c, raw.trim().replace(/^\[|\]$/g, ''), raw.trim().replace(/^\[|\]$/g, '').toLowerCase()]);
+  if (isIP(c) === 4) { out.add(`::ffff:${c}`); out.add(`::FFFF:${c}`); }
+  else out.add(c.toUpperCase());
+  return [...out].filter((x) => isIP(x) !== 0);
 }
 
 function urlParams(url: string | null): URLSearchParams | null {
@@ -66,15 +94,13 @@ export function parseLead(raw: Record<string, unknown>): LeadInput {
   let submitted: Date | null = null;
   const sub = s(raw.submitted_at, 64);
   if (sub) {
-    const t = Date.parse(sub);
-    if (Number.isNaN(t)) problems.push('submitted_at is not an ISO 8601 time');
-    else submitted = new Date(t);
+    // Same reading as log/CSV import: a time with no zone is UTC, never the server's local time.
+    const t = parseTimestamp(sub);
+    if (!t) problems.push('submitted_at is not a recognised time (use ISO 8601, e.g. 2026-09-29T14:10:00Z)');
+    else submitted = new Date(t.ms);
   }
   let ip = s(raw.ip, 64);
-  if (ip) {
-    ip = stripMapped(ip.replace(/^\[|\]$/g, ''));
-    if (!isIP(ip)) { problems.push('ip is not a valid IP address'); ip = null; }
-  }
+  if (ip && !canonicalIp(ip)) { problems.push('ip is not a valid IP address'); ip = null; }
   return {
     lead_id: s(raw.lead_id, 128) ?? '',
     submitted_at: submitted,
@@ -107,7 +133,7 @@ export function findClick(site: Site, lead: LeadInput): Matched | Unmatched {
     const hits = eventsByClickId(site.id, stored);
     if (!hits.length) continue;
     if (kind !== 'gclid') {
-      const visitors = new Set(hits.map((h) => h.ip));
+      const visitors = new Set(hits.map((h) => canonicalIp(h.ip) ?? h.ip));
       if (visitors.size > 1) { ambiguous = `this ${kind} was carried by ${visitors.size} different visitors (it identifies a campaign and day, not one click)`; continue; }
     }
     return { basis: 'click_id', event: representative(hits) };
@@ -117,7 +143,7 @@ export function findClick(site: Site, lead: LeadInput): Matched | Unmatched {
   if (lead.ip && lead.submitted_at) {
     const t = lead.submitted_at.getTime();
     const w = MATCH_WINDOW_MIN * 60_000;
-    const hits = eventsByIp(site.id, lead.ip, new Date(t - w).toISOString(), new Date(t + w).toISOString());
+    const hits = eventsByIp(site.id, ipVariants(lead.ip), new Date(t - w).toISOString(), new Date(t + w).toISOString());
     if (hits.length) {
       const want = urlParams(lead.landing_url);
       const utmKeys = want ? [...want.keys()].filter((k) => k.startsWith('utm_')) : [];
@@ -149,17 +175,25 @@ const DAY = 86_400_000;
 const dayOf = (iso: string) => iso.slice(0, 10);
 const shift = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:00Z`) + n * DAY).toISOString().slice(0, 10);
 
-/** Scores for the matched events: one analysis over their days ± 1 when that fits in 90 days, else one per day. */
+/**
+ * Scores for the matched events. Their days (± 1) are merged into as few windows as possible — days within a
+ * couple of days of each other share one — and no window is longer than 90 days, so 200 leads spread over a
+ * year cost a handful of analyses, not one per day.
+ */
 function scoresFor(site: Site, events: ClickEvent[], now: Date): Map<number, ScoredEvent> {
   const out = new Map<number, ScoredEvent>();
   if (!events.length) return out;
   const today = now.toISOString().slice(0, 10);
   const clamp = (d: string) => (d > today ? today : d);
+  const span = (a: string, b: string) => (Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY + 1;
   const days = [...new Set(events.map((e) => dayOf(e.ts)))].sort();
-  const from = shift(days[0], -1), to = clamp(shift(days[days.length - 1], 1));
-  const windows: [string, string][] = (Date.parse(to) - Date.parse(from)) / DAY + 1 <= MAX_SPAN_DAYS
-    ? [[from, to]]
-    : days.map((d) => [shift(d, -1), clamp(shift(d, 1))]);
+  const windows: [string, string][] = [];
+  for (const d of days) {
+    const last = windows[windows.length - 1];
+    const from = shift(d, -1), to = clamp(shift(d, 1));
+    if (last && from <= shift(last[1], 2) && span(last[0], to) <= MAX_SPAN_DAYS) last[1] = to;
+    else windows.push([from, to]);
+  }
   const wanted = new Set(events.map((e) => e.id));
   for (const [f, t] of windows) {
     for (const sc of analyse(site, f, t, now.getTime()).scored) if (wanted.has(sc.event.id) && !out.has(sc.event.id)) out.set(sc.event.id, sc);

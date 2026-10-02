@@ -16,8 +16,9 @@ const { openMemoryDb, createSite, insertEvents, updateSite, getSite } = await im
 const { app } = await import('../src/app.js');
 const { CSRF_SECRET } = await import('../src/ui.js');
 const { generateFixture } = await import('../src/rules/fixtures.js');
+const { canonicalIp } = await import('../src/mcp/leads.js');
 const { runAnalysis } = await import('../src/rules/index.js');
-const { issueToken, revokeToken, takeFlashToken, tokenSource } = await import('../src/mcp/token.js');
+const { issueToken, revokeToken, takeFlashToken, tokenSource, envTokenTooShort } = await import('../src/mcp/token.js');
 const { resetMcpRateLimit } = await import('../src/mcp/index.js');
 const { analysisRuns, clearAnalysisCache } = await import('../src/mcp/analyse.js');
 const { argumentError } = await import('../src/mcp/schema.js');
@@ -112,6 +113,7 @@ describe('mcp', () => {
     for (const method of ['POST', 'GET', 'OPTIONS', 'DELETE']) {
       const r = await raw('/mcp', { method, headers: { authorization: 'Bearer x' }, ...(method === 'POST' ? { body: '{}' } : {}) });
       assert.equal(r.status, 404, method);
+      assert.equal(r.headers.get('access-control-allow-origin'), null, 'nothing marks the route while off');
     }
     assert.equal((await raw('/healthz')).status, 200);
   });
@@ -136,9 +138,11 @@ describe('mcp', () => {
     const t = issueToken();
     assert.equal(takeFlashToken(), t);
     assert.equal(takeFlashToken(), null);
-    const { getSetting } = await import('../src/db.js');
-    assert.equal(getSetting('mcp_token_sha256')!.length, 64);
-    assert.ok(!JSON.stringify(getSetting('mcp_token_sha256')).includes(t));
+    const { db } = await import('../src/db.js');
+    const rows = db().prepare("SELECT key, value FROM settings WHERE key LIKE 'mcp%'").all() as { key: string; value: string }[];
+    assert.deepEqual(rows.map((r) => r.key), ['mcp_token_sha256']);
+    assert.equal(rows[0].value.length, 64);
+    assert.ok(!JSON.stringify(rows).includes(t), 'plain token never written to the database');
     assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN)).status, 401, 'old token stops working after rotation');
     TOKEN = t;
     assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' })).status, 200);
@@ -151,21 +155,30 @@ describe('mcp', () => {
   });
 
   it('SMB_MCP_TOKEN overrides the stored token', async () => {
-    process.env.SMB_MCP_TOKEN = 'env-token-0123456789';
+    process.env.SMB_MCP_TOKEN = 'env-token-0123456789-abcdefgh';
     assert.equal(tokenSource(), 'env');
     assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' })).status, 401);
-    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'env-token-0123456789')).status, 200);
+    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'env-token-0123456789-abcdefgh')).status, 200);
+    process.env.SMB_MCP_TOKEN = 'changeme';
+    assert.equal(envTokenTooShort(), true);
+    assert.equal(tokenSource(), 'settings', 'a short env token is ignored');
+    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'changeme')).status, 401);
     delete process.env.SMB_MCP_TOKEN;
     assert.equal(tokenSource(), 'settings');
   });
 
-  it('rate limits per client address, failed sign-ins included', async () => {
+  it('rate limits per client, counts each batch message, and keeps failed sign-ins in their own bucket', async () => {
     resetMcpRateLimit(3);
     for (let i = 0; i < 3; i++) assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'wrong', '192.0.2.9')).status, 401);
-    const r = await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.9');
-    assert.equal(r.status, 429);
+    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'wrong', '192.0.2.9')).status, 429, 'guessing is capped');
+    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.9')).status, 200, 'the scanner did not lock out the token holder');
+    const batch = Array.from({ length: 3 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'ping' }));
+    const r = await post(batch, TOKEN, '192.0.2.9');
+    assert.equal(r.status, 429, 'a batch of 3 after 1 call exceeds 3 messages');
     assert.equal(r.headers.get('retry-after'), '60');
     assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.10')).status, 200, 'another client is unaffected');
+    for (let i = 0; i < 3; i++) await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '2001:db8:5::1');
+    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '2001:db8:5::2')).status, 429, 'IPv6 keyed by /64');
     resetMcpRateLimit(1_000_000);
   });
 
@@ -194,6 +207,15 @@ describe('mcp', () => {
     assert.deepEqual(batch.json.map((x: any) => x.id), [1, 'b']);
     const note = await post({ jsonrpc: '2.0', method: 'notifications/initialized' });
     assert.equal(note.status, 202);
+    const nullId = await post({ jsonrpc: '2.0', id: null, method: 'nope' });
+    assert.equal(nullId.json.error.code, -32601, 'id null is a request, not a notification');
+    const objId = await post({ jsonrpc: '2.0', id: {}, method: 'ping' });
+    assert.equal(objId.json.error.code, -32600);
+    const { getCounter } = await import('../src/db.js');
+    const calls = getCounter('mcp_calls');
+    const silent = await post({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'list_sites', arguments: {} } });
+    assert.equal(silent.status, 202);
+    assert.equal(getCounter('mcp_calls'), calls, 'a tool call sent as a notification is not run');
     const big = await post({ jsonrpc: '2.0', id: 1, method: 'ping', params: { pad: 'x'.repeat(1_100_000) } });
     assert.equal(big.status, 413);
   });
@@ -228,6 +250,8 @@ describe('mcp', () => {
     assert.match((await call('get_site_summary', { site_id: siteId, from: day(-100), to: day(-1) })).text, /at most 90 days/);
     assert.match((await call('get_site_summary', { site_id: siteId, to: day(2) })).text, /future/);
     assert.match((await call('get_site_summary', { site_id: siteId, from: '2026-02-30' })).text, /date like/);
+    const since = await call('get_site_summary', { site_id: siteId, from: day(-20) });
+    assert.deepEqual([since.data.window.from, since.data.window.to], [day(-20), day(0)], 'from alone runs to today');
     assert.match((await call('nope')).text, /Unknown tool/);
     for (const ref of [siteId, String(siteId), 'shop.test', 'https://www.shop.test/landing?x=1', 'WWW.SHOP.TEST.', 'Shop']) {
       const r = await call('get_site_summary', { site_id: ref, from: FROM, to: TO });
@@ -342,6 +366,10 @@ describe('mcp', () => {
     const ok = await call('get_claim_window', { site_id: siteId, from: FROM, to: TO });
     assert.equal(ok.data.ok, true);
     assert.equal(ok.data.days_left_for_first_day, 50);
+    assert.equal(ok.data.earliest_filable_day, day(-59));
+    const edge = await call('get_claim_window', { site_id: siteId, from: day(-59), to: day(-50) });
+    assert.equal(edge.data.ok, true);
+    assert.equal(edge.data.warning, undefined, 'the earliest filable day draws no warning');
     const old = await call('get_claim_window', { site_id: siteId, from: day(-80), to: day(-70) });
     assert.equal(old.data.ok, false);
     assert.equal(old.data.days_left_for_last_day, 0);
@@ -393,6 +421,25 @@ describe('mcp', () => {
     assert.equal(r.data.summary.flag + r.data.summary.watch + r.data.summary.allow + r.data.summary.no_match, 11);
   });
 
+  it('match_leads reads zone-less times as UTC and matches any IP spelling', async () => {
+    const r = await call('match_leads', { site_id: siteId, leads: [
+      { lead_id: 'naive', ip: '198.51.100.7', submitted_at: `${lateDay} 14:12:00` },
+      { lead_id: 'mapped', ip: '::ffff:198.51.100.7', submitted_at: `${lateDay}T14:12:00Z` },
+      { lead_id: 'v6-long', ip: '2001:DB8:0:0:0:0:0:1', submitted_at: `${lateDay}T17:05:00Z` },
+      { lead_id: 'junk-time', ip: '198.51.100.7', submitted_at: '1' },
+    ] });
+    const g = (k: string) => r.data.results.find((x: any) => x.lead_id === k);
+    assert.equal(g('naive').ts, `${lateDay}T14:10:00.000Z`);
+    assert.equal(g('mapped').ts, `${lateDay}T14:10:00.000Z`);
+    assert.equal(g('v6-long').match_basis, 'ip_time');
+    assert.match(g('junk-time').reason, /not a recognised time/);
+    assert.equal(canonicalIp('::ffff:c633:6407'), '198.51.100.7');
+    assert.equal(canonicalIp('2001:DB8:0:0:0:0:0:1'), '2001:db8::1');
+    assert.equal(canonicalIp('banana'), null);
+    const p = await call('get_ip_profile', { site_id: siteId, ip: '2001:0DB8::0001' });
+    assert.equal(p.data.hits, 1);
+  });
+
   it('match_leads: utm breaks a tie between clicks before the submission', async () => {
     const r = await call('match_leads', { site_id: siteId, leads: [{ lead_id: 'x', ip: '198.51.100.7', submitted_at: `${lateDay}T14:20:00.000Z`, landing_url: 'https://shop.test/?utm_campaign=brand' }] });
     assert.equal(r.data.results[0].ts, `${lateDay}T14:00:00.000Z`);
@@ -419,6 +466,10 @@ describe('mcp', () => {
     assert.deepEqual(b.data.counts, a.data.counts);
     const c = await call('run_analysis', { site_id: siteId, from: FROM, to: TO, force: true });
     assert.notEqual(c.data.analysis_id, a.data.analysis_id);
+    insertEvents([ev(siteId, { ts: `${FROM}T12:00:00.000Z`, ip: '34.90.9.9', gclid: 'Cj0_LATE_IMPORT', is_hosting: 1, source: 'log' })]);
+    const d = await call('run_analysis', { site_id: siteId, from: FROM, to: TO });
+    assert.equal(d.data.reused, false, 'new data in the window → a new analysis, not the stale one');
+    assert.equal(d.data.counts.total, c.data.counts.total + 1);
     assert.match((await call('run_analysis', { site_id: siteId, from: day(-80), to: day(-70) })).text, /outside that limit/);
     assert.match((await call('run_analysis', { site_id: siteId })).text, /arguments\.from is required/);
   });
@@ -488,6 +539,7 @@ describe('mcp', () => {
     const en = await raw('/api/mcp/enable', { method: 'POST', headers: csrfHeaders, body: new URLSearchParams({ _csrf: CSRF_SECRET }).toString() });
     assert.equal(en.status, 303);
     assert.ok(!(en.headers.get('location') ?? '').includes('smbt_'), 'token never in a URL');
+    assert.equal((await raw('/settings', { method: 'HEAD' })).status, 200);
     const page1 = await (await raw('/settings')).text();
     const shown = /smbt_[A-Za-z0-9_-]{43}/.exec(page1)?.[0];
     assert.ok(shown, 'token shown on the first view');
@@ -501,7 +553,7 @@ describe('mcp', () => {
     const dis = await raw('/api/mcp/disable', { method: 'POST', headers: csrfHeaders, body: new URLSearchParams({ _csrf: CSRF_SECRET }).toString() });
     assert.equal(dis.status, 303);
     assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' })).status, 404);
-    process.env.SMB_MCP_TOKEN = 'env-token-0123456789';
+    process.env.SMB_MCP_TOKEN = 'env-token-0123456789-abcdefgh';
     const envPage = await (await raw('/settings')).text();
     assert.match(envPage, /SMB_MCP_TOKEN/);
     assert.ok(!envPage.includes('action="/api/mcp/enable"'), 'buttons hidden when the env sets the token');

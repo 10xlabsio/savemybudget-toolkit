@@ -6,6 +6,7 @@ import { bumpDataGeneration, db, listSites, getSetting, now, getCounter } from '
 import { config } from '../config.js';
 import * as telemetry from '../telemetry/index.js';
 import { mcpEnabled } from '../mcp/token.js';
+import { sweepOAuth } from '../mcp/oauth.js';
 
 // ---------- notifications ----------
 
@@ -87,6 +88,9 @@ export function sweepStagedUploads(nowMs = Date.now(), maxAgeMs = STAGED_MAX_AGE
 export function hourlyTick(nowDate = new Date()) {
   const d = db();
   const nowIso = nowDate.toISOString();
+
+  // Expired sign-in codes and tokens
+  try { sweepOAuth(nowDate.getTime()); } catch (e) { log('oauth sweep failed', e); }
 
   // Retention purge
   const cutoff = new Date(nowDate.getTime() - retentionDays() * 86400e3).toISOString();

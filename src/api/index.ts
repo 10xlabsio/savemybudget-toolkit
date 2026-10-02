@@ -16,6 +16,7 @@ import { runAnalysis, saveAnalysis, loadAnalysis } from '../rules/index.js';
 import { dismissNotification, retentionDays, clearNotifications, log } from '../jobs/index.js';
 import * as telemetry from '../telemetry/index.js';
 import { issueToken, revokeToken, tokenSource } from '../mcp/token.js';
+import { signOutAllAssistants } from '../mcp/oauth.js';
 import { COUNTRY_CODES, bytes, makeSiteKey, parseBufferedForm, validateHost, type AppEnv } from '../ui.js';
 
 export const api = new Hono<AppEnv>();
@@ -227,6 +228,7 @@ export function safeNext(next: string): string | null {
 /** Create or replace the /mcp token. The plain token is shown once on the next Settings view, never put in a URL. */
 function mcpTokenRoute(c: { redirect(location: string, status: 303): Response }) {
   if (tokenSource() === 'env') return c.redirect('/settings?mcp=env#ai-assistants', 303);
+  signOutAllAssistants();
   issueToken();
   return c.redirect('/settings?mcp=new#ai-assistants', 303);
 }
@@ -235,7 +237,12 @@ api.post('/mcp/rotate', (c) => mcpTokenRoute(c));
 api.post('/mcp/disable', (c) => {
   if (tokenSource() === 'env') return c.redirect('/settings?mcp=env#ai-assistants', 303);
   revokeToken();
+  signOutAllAssistants();
   return c.redirect('/settings?mcp=off#ai-assistants', 303);
+});
+api.post('/mcp/signout', (c) => {
+  signOutAllAssistants();
+  return c.redirect('/settings?mcp=signedout#ai-assistants', 303);
 });
 
 // ---------- uploads ----------

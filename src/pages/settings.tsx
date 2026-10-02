@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { Layout, Csrf } from './layout.js';
-import { TIMEZONES, displayHost, n } from '../ui.js';
+import { TIMEZONES, displayHost, n, relTime } from '../ui.js';
 import type { Notification } from '../jobs/index.js';
 import type { Site } from '../types.js';
 
@@ -10,7 +10,10 @@ export interface SettingsProps {
   publicUrl: string; tz: string; retentionDays: number; storeMb: number; silentHours: number;
   telemetryOn: boolean; telemetryEnv: boolean; updateCheckOn: boolean; updateCheckEnv: boolean;
   bind: string; counters: { key: string; value: number; what: string }[];
-  mcp: { source: 'env' | 'settings' | null; token: string | null; publicEndpoint: string | null; localEndpoint: string; notice: string | null };
+  mcp: {
+    source: 'env' | 'settings' | null; token: string | null; publicEndpoint: string | null; localEndpoint: string; notice: string | null;
+    signInReady: boolean; assistants: { family: string; clientName: string; since: string; lastUsedAt: string | null }[];
+  };
   saved?: boolean;
   error?: string | null;
 }
@@ -156,16 +159,42 @@ function McpCard(m: SettingsProps['mcp'] & { csrf: string }) {
       <p><code class="brk">{endpoint}</code></p>
       <p class="hint">{m.publicEndpoint ? <>The shipped Caddyfile forwards <code>/mcp</code> on your tag subdomain. On this machine you can also use <code>{m.localEndpoint}</code>.</> : <>Set the public URL above to reach it from other machines; the shipped Caddyfile forwards <code>/mcp</code>.</>}</p>
       <h3 style="margin-top:14px">Connect</h3>
+      <details class="sw" open={m.source !== null}><summary>claude.ai, Claude Desktop and Claude mobile</summary>
+        {m.signInReady ? (
+          <ol>
+            <li>In Claude: Settings → Connectors → <b>Add custom connector</b>.</li>
+            <li>Name it SaveMyBudget Toolkit and paste <code class="brk">{endpoint}</code>.</li>
+            <li>Choose <b>Connect</b>. A sign-in page on your toolkit opens: paste the token and choose Connect.</li>
+          </ol>
+        ) : (
+          <p class="hint">Set the public URL above first: Claude connects from the internet, and the sign-in page lives on that address.</p>
+        )}
+        <p class="hint">Claude keeps its own sign-in, separate from the token. A new token or Turn off signs it out.</p>
+      </details>
       <details class="sw"><summary>Claude Code</summary>
         <div class="copybox"><pre><code id="mcp-cc">{claudeCode}</code></pre><button type="button" class="btn sm" data-copy="mcp-cc">Copy</button></div>
       </details>
       <details class="sw"><summary>Cursor (~/.cursor/mcp.json)</summary>
         <div class="copybox"><pre><code id="mcp-cursor">{cursor}</code></pre><button type="button" class="btn sm" data-copy="mcp-cursor">Copy</button></div>
       </details>
-      <details class="sw"><summary>Claude Desktop (claude_desktop_config.json, through mcp-remote)</summary>
+      <details class="sw"><summary>Other clients with a config file (through mcp-remote)</summary>
         <div class="copybox"><pre><code id="mcp-desktop">{desktop}</code></pre><button type="button" class="btn sm" data-copy="mcp-desktop">Copy</button></div>
-        <p class="hint">Needs Node.js on that computer. Custom connectors added in claude.ai can't send a fixed token on most plans, so Claude Desktop connects through this small local bridge.</p>
+        <p class="hint">For a desktop client that reads an mcpServers file but can't sign in or send headers. Needs Node.js on that computer.</p>
       </details>
+      {m.source !== null ? (
+        <>
+          <h3 style="margin-top:14px">Signed-in assistants</h3>
+          {m.assistants.length ? (
+            <>
+              <div class="tbl"><table>
+                <thead><tr><th>Assistant</th><th>Signed in</th><th>Last used</th></tr></thead>
+                <tbody>{m.assistants.map((a) => <tr><td class="wrap">{a.clientName}</td><td>{relTime(a.since)}</td><td>{relTime(a.lastUsedAt)}</td></tr>)}</tbody>
+              </table></div>
+              <form method="post" action="/api/mcp/signout" style="margin-top:8px" data-confirm="Sign out every assistant that signed in? The token keeps working; they can connect again with it."><Csrf token={m.csrf} /><button type="submit" class="btn sm">Sign out all</button></form>
+            </>
+          ) : <p class="hint">None. Assistants that use the token directly (Claude Code, Cursor) aren't listed here.</p>}
+        </>
+      ) : null}
       <p class="hint" style="margin-top:10px">What it can do, and every tool: <a href="/docs/ai-assistants">AI assistants</a>.</p>
     </div>
   );

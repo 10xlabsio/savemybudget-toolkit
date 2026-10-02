@@ -11,6 +11,7 @@ import { db, getCounter, getSetting, getSite, listSites, setSetting } from './db
 import { collectApp } from './collect/index.js';
 import { api } from './api/index.js';
 import { mcpApp } from './mcp/index.js';
+import { oauthOrigin, signedInAssistants, wellKnownApp } from './mcp/oauth.js';
 import { MIN_ENV_TOKEN_LENGTH, envTokenTooShort, takeFlashToken, tokenSource } from './mcp/token.js';
 import { activeNotifications, retentionDays, silentThresholdHours, storeSizeMb, log } from './jobs/index.js';
 import { loadAnalysis } from './rules/index.js';
@@ -58,6 +59,8 @@ app.mount('/collect', collectApp.fetch);
 app.mount('/v1', collectApp.fetch, { replaceRequest: (r) => r });
 // MCP for AI assistants: bearer-token auth of its own, so it sits outside the UI middleware too (404 until enabled).
 app.mount('/mcp', mcpApp.fetch);
+// OAuth discovery for assistants that sign in (claude.ai connectors). 404 unless AI assistants are on and a public URL is set.
+app.mount('/.well-known', wellKnownApp.fetch);
 
 // ---------- UI middleware ----------
 
@@ -313,7 +316,9 @@ app.get('/settings', (c) => page(c, SettingsPage({
     token: c.req.method === 'GET' ? takeFlashToken() : null, // a HEAD must not use up the one showing
     publicEndpoint: publicUrl() ? `${publicUrl().replace(/\/+$/, '')}/mcp` : null,
     localEndpoint: `http://127.0.0.1:${config.port}/mcp`,
-    notice: envTokenTooShort() ? `SMB_MCP_TOKEN is set but shorter than ${MIN_ENV_TOKEN_LENGTH} characters, so it is ignored. Use a long random value, e.g. openssl rand -base64 32.` : ({ off: 'AI assistant access turned off. The old token no longer works.', env: 'The token is set by SMB_MCP_TOKEN in the environment; change it there.' } as Record<string, string>)[c.req.query('mcp') ?? ''] ?? null,
+    signInReady: oauthOrigin() !== null,
+    assistants: signedInAssistants(),
+    notice: envTokenTooShort() ? `SMB_MCP_TOKEN is set but shorter than ${MIN_ENV_TOKEN_LENGTH} characters, so it is ignored. Use a long random value, e.g. openssl rand -base64 32.` : ({ off: 'AI assistant access turned off. The old token no longer works and every assistant is signed out.', env: 'The token is set by SMB_MCP_TOKEN in the environment; change it there.', signedout: 'Every signed-in assistant has been signed out. They can connect again with the token.' } as Record<string, string>)[c.req.query('mcp') ?? ''] ?? null,
   },
   counters: [
     { key: 'collect_unknown_key', value: getCounter('collect_unknown_key'), what: 'Beacons that named a site key this instance does not have — usually an old snippet or a copy-paste slip.' },
@@ -322,7 +327,8 @@ app.get('/settings', (c) => page(c, SettingsPage({
     { key: 'collect_ratelimited', value: getCounter('collect_ratelimited'), what: 'Beacons dropped because one address sent more than 120 in a minute.' },
     { key: 'sdk_errors', value: getCounter('sdk_errors'), what: 'Times the SDK reported an internal error from a visitor\'s browser.' },
     { key: 'mcp_calls', value: getCounter('mcp_calls'), what: 'Tool calls answered for AI assistants over /mcp.' },
-    { key: 'mcp_unauthorized', value: getCounter('mcp_unauthorized'), what: 'Requests to /mcp with a missing or wrong token. A steady stream means someone is guessing — rotate the token.' },
+    { key: 'mcp_unauthorized', value: getCounter('mcp_unauthorized'), what: 'Requests to /mcp, or sign-in attempts, with a missing or wrong token. Assistants that sign in make one each time they connect; a steady stream means someone is guessing — create a new token.' },
+    { key: 'mcp_signins', value: getCounter('mcp_signins'), what: 'Times an assistant signed in with the token (claude.ai and other connectors).' },
   ],
   saved: c.req.query('saved') === '1',
   error: c.req.query('error') === 'url' ? 'The public URL was not saved: it must start with http:// or https:// and name a host, for example https://t.yourbrand.com.' : null,

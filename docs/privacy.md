@@ -28,6 +28,8 @@ Default 90 days, purged nightly, configurable down to 60 (Google's claim window)
 
 The UI is bound to the host's loopback interface by default and is not reachable from the internet. If you expose it, put authentication in front of it (see [Configuration](configuration.md#exposing-the-ui)). Server logs at the default level don't include visitor IPs.
 
+AI assistants (Settings → AI assistants, off by default) can read what the UI shows, including full visitor IPs, through `/mcp` with a token. An assistant sends tool results to its model provider, so if you turn it on, make sure your privacy notice covers that processor. Fingerprint hashes and raw user-agent strings are never returned. See [AI assistants](ai-assistants.md).
+
 ## Deleting
 
 Settings → per site → **Delete site data** removes every record for that site. `docker compose down -v` removes everything. If a visitor asks you to erase their data, delete the rows for their IP with the export/delete tools or directly in the SQLite file at `/data/toolkit.db`.

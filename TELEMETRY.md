@@ -28,9 +28,9 @@ Each instance has a random identifier written to the data volume on first run. I
 | `instance_started` | on boot | toolkit version, Node version, OS and architecture, deploy method (`compose` / `docker` / `npm`), whether this is the first boot |
 | `snippet_generated` | when a snippet is generated in the UI | consent mode chosen |
 | `first_beacon` | once, when the first beacon ever arrives | hours since first boot |
-| `heartbeat` | daily | beacons per day (bucket), distinct click IDs (bucket), number of sites, whether log/CSV import has been used, data directory size (bucket), uptime |
-| `analysis_run` | when rules are run | count of clicks each rule fired on, flagged share (bucket), window length in days, which sources were present |
-| `claim_package` | when a package is built | flagged rows (bucket), whether the exclusions list was included |
+| `heartbeat` | daily | beacons per day (bucket), distinct click IDs (bucket), number of sites, whether log/CSV import has been used, data directory size (bucket), uptime, whether AI assistant access is on, and the running count of AI assistant tool calls |
+| `analysis_run` | when rules are run | count of clicks each rule fired on, flagged share (bucket), window length in days, which sources were present, and `via: mcp` when an AI assistant ran it |
+| `claim_package` | when a package is built | flagged rows (bucket), whether the exclusions list was included, and `via: mcp` when an AI assistant built it |
 | `error` | on an unexpected error | which stage (`collect`, `parse`, `enrich`, `score`, `write`) and the error class name |
 
 Buckets are ranges such as `<1k`, `1k–10k`, `10k–100k`, `>100k`. Counts are integers. Nothing else.

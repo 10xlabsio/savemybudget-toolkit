@@ -1,10 +1,14 @@
 # Replace t.example.com with the subdomain in SMB_PUBLIC_URL.
-# Only the collector and the SDK are public. The UI stays on the host's loopback.
+# Only the collector, the SDK and the MCP endpoint are public. The UI stays on the host's loopback.
+# /mcp answers 404 until you turn on AI assistants in Settings (or set SMB_MCP_TOKEN), and needs that token.
 t.example.com {
     handle /collect* {
         reverse_proxy toolkit:8080
     }
     handle /sdk/* {
+        reverse_proxy toolkit:8080
+    }
+    handle /mcp* {
         reverse_proxy toolkit:8080
     }
     handle {

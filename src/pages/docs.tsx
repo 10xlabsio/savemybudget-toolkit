@@ -10,6 +10,7 @@ export const DOC_PAGES: { slug: string; title: string }[] = [
   { slug: 'inputs', title: 'Inputs' },
   { slug: 'rules', title: 'Rules' },
   { slug: 'filing-a-claim', title: 'Filing a claim' },
+  { slug: 'ai-assistants', title: 'AI assistants' },
   { slug: 'configuration', title: 'Configuration' },
   { slug: 'privacy', title: 'Privacy' },
   { slug: 'faq', title: 'FAQ' },

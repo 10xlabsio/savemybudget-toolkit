@@ -4,7 +4,7 @@ All settings are environment variables, read at start. Values you change in the 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SMB_PUBLIC_URL` | — (required) | The URL the tag posts to, e.g. `https://t.example.com`. Used in the snippet and in the setup check. |
+| `SMB_PUBLIC_URL` | — (required) | The URL the tag posts to, e.g. `https://t.example.com`. Used in the snippet, the setup check, and as the address AI assistants sign in to. |
 | `SMB_TZ` | `UTC` | Timezone for windows and the summary. IANA name. |
 | `SMB_PORT` | `8080` | Port the process listens on. |
 | `SMB_BIND` | `127.0.0.1` | Interface to bind. Compose sets `0.0.0.0` inside the container network; Caddy exposes only `/collect`, `/sdk` and `/mcp`. |
@@ -64,7 +64,7 @@ t.example.com {
     handle /sdk/* {
         reverse_proxy toolkit:8080
     }
-    @mcp path /mcp /mcp/*
+    @mcp path /mcp /mcp/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/* /.well-known/oauth-authorization-server /.well-known/oauth-authorization-server/* /.well-known/openid-configuration
     handle @mcp {
         reverse_proxy toolkit:8080
     }
@@ -74,7 +74,7 @@ t.example.com {
 }
 ```
 
-Replace `t.example.com` with your subdomain. Caddy obtains and renews the certificate on its own. `/mcp` is the endpoint for AI assistants; it answers 404 until you turn it on and then requires a token — see [AI assistants](ai-assistants.md). Installs from before 1.1.0 need the `@mcp` block added to reach it from another machine.
+Replace `t.example.com` with your subdomain. Caddy obtains and renews the certificate on its own. `/mcp` is the endpoint for AI assistants, and the `/.well-known/oauth-*` paths are how Claude's connectors find its sign-in page; all of them answer 404 until you turn it on, and then require the token — see [AI assistants](ai-assistants.md). Installs from before 1.1.0 need the `@mcp` block added to reach it from another machine.
 
 ## Exposing the UI
 
@@ -91,7 +91,7 @@ ui.example.com {
 
 ## Behind your own reverse proxy
 
-Point `/collect`, `/sdk/` and (for AI assistants) `/mcp` at the toolkit's port, forward `X-Forwarded-For`, set `SMB_TRUST_PROXY=1`, and keep everything else off the internet. TLS is required on the public URL: browsers won't post beacons from an HTTPS page to an HTTP endpoint.
+Point `/collect`, `/sdk/` and (for AI assistants) `/mcp` plus `/.well-known/oauth-protected-resource*`, `/.well-known/oauth-authorization-server*` and `/.well-known/openid-configuration` at the toolkit's port, forward `X-Forwarded-For`, set `SMB_TRUST_PROXY=1`, and keep everything else off the internet. TLS is required on the public URL: browsers won't post beacons from an HTTPS page to an HTTP endpoint.
 
 ## Running without Docker
 

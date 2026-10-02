@@ -1,6 +1,6 @@
 # AI assistants
 
-The toolkit has an [MCP](https://modelcontextprotocol.io) server built in, so Claude Code, Claude Desktop, Cursor or any other MCP client can work with your click data in plain English: "which IPs hit us most this week?", "were last week's leads real?", "prepare the September claim".
+The toolkit has an [MCP](https://modelcontextprotocol.io) server built in, so Claude (on claude.ai, desktop or mobile), Claude Code, Cursor or any other MCP client can work with your click data in plain English: "which IPs hit us most this week?", "were last week's leads real?", "prepare the September claim".
 
 It reads what the toolkit's own UI shows and can save an analysis or build a claim package. It does not connect to Google Ads, change anything there, or file anything: a person still downloads the package and submits Google's form.
 
@@ -16,7 +16,17 @@ To manage the token as configuration instead, set `SMB_MCP_TOKEN` in `.env` and 
 
 ## Connect
 
-Every request carries the token as `Authorization: Bearer <token>`.
+There are two ways in. Clients that can send a header use the token directly as `Authorization: Bearer <token>`. Claude's custom connectors (claude.ai, Claude Desktop, Claude mobile) sign in instead: they open a page on your toolkit, you paste the token once, and the assistant gets its own short-lived credentials.
+
+**claude.ai, Claude Desktop and Claude mobile**
+
+Needs the public URL set (Settings → Instance) and the Caddyfile's `@mcp` block, because Claude connects from the internet.
+
+1. In Claude: Settings → Connectors → **Add custom connector** (where your plan offers custom connectors).
+2. Give it a name and paste `https://t.example.com/mcp`. Leave the advanced OAuth fields empty.
+3. Choose **Connect**. A page on your toolkit opens and names the app asking; paste the token and choose **Connect**.
+
+The assistant stays signed in (access for an hour at a time, renewed for up to 30 days of use). Settings → AI assistants lists signed-in assistants and has **Sign out all**. A new token, or Turn off, signs every assistant out.
 
 **Claude Code**
 
@@ -37,7 +47,7 @@ claude mcp add --transport http savemybudget https://t.example.com/mcp --header 
 }
 ```
 
-**Claude Desktop** — through the [`mcp-remote`](https://github.com/geelen/mcp-remote) bridge (needs Node.js), in `claude_desktop_config.json`:
+**A client that reads an `mcpServers` file but can't sign in or send headers** — through the [`mcp-remote`](https://github.com/geelen/mcp-remote) bridge (needs Node.js):
 
 ```json
 {
@@ -50,8 +60,6 @@ claude mcp add --transport http savemybudget https://t.example.com/mcp --header 
   }
 }
 ```
-
-Custom connectors added on claude.ai sign in with OAuth, which the toolkit doesn't offer; a fixed token there is limited to some organisations. That's why Claude Desktop goes through the local bridge.
 
 **Anything else** — any client that speaks MCP over Streamable HTTP and can send a header: n8n, your own scripts, other assistants.
 
@@ -92,6 +100,10 @@ Verdicts are `flag` (the rules say invalid), `watch` (suspicious, worth a look) 
 
 The assistant sees what the UI shows, including full visitor IPs, so treat the token like the UI itself. Assistants send tool results to their model provider: check that's covered by your privacy notice before pointing one at visitor data. Fingerprint hashes, raw user-agent strings and file paths are never returned.
 
+## How sign-in works
+
+Standard OAuth 2.1 with the pieces MCP clients expect: protected-resource and authorization-server metadata under `/.well-known/` on your tag subdomain (built from the public URL, never from the request), dynamic client registration, the authorization-code flow with PKCE (S256 only), single-use rotating refresh tokens (replaying an old one ends that sign-in), and revocation. Only hashes of codes, tokens and client secrets are stored. Every sign-in is tied to the current token, which is why a new token signs everyone out. Wrong tokens on the sign-in page are rate limited and counted with the others.
+
 ## Limits
 
 120 messages a minute per client (each message in a batch counts; IPv6 clients by /64), with failed sign-ins limited separately so someone guessing can't lock you out; 1 MiB per request, 50 messages per batch, 200 leads per `match_leads` call. Analyses are computed on request and reused for up to 60 seconds; imports, deletions and site edits take effect immediately. `run_analysis` returns an analysis saved in the last 24 hours only if the data still gives the same counts.
@@ -101,6 +113,7 @@ The assistant sees what the UI shows, including full visitor IPs, so treat the t
 | You see | Meaning |
 |---|---|
 | `404` | Not turned on: create a token in Settings, or set `SMB_MCP_TOKEN` |
-| `401` | Missing or wrong token. The Settings counter `mcp_unauthorized` counts these |
+| `401` | Missing or wrong token. The Settings counter `mcp_unauthorized` counts these. A signed-in assistant gets this after a new token or Sign out all — connect it again |
+| Claude says it couldn't reach the server, or sign-in never starts | Check the public URL is set and is the address you gave Claude, and that `https://<your subdomain>/.well-known/oauth-protected-resource` loads (the Caddyfile's `@mcp` block forwards it) |
 | `429` | Over 120 messages a minute from one client; wait a minute |
 | The client can't reach the URL | Check the Caddyfile has the `@mcp` block (added in 1.1.0) and reload Caddy |

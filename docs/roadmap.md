@@ -4,7 +4,6 @@ What's planned, what's being considered, and what's out of scope. Open a discuss
 
 ## Next
 
-- **Sign-in for claude.ai connectors** — a small OAuth flow on `/mcp` (the sign-in page asks for the instance token) so the toolkit can be added as a custom connector on claude.ai, not only through Claude Code, Cursor or a local bridge.
 - **Feedback from assistants** — mark a flagged IP as your own traffic or a lead as junk; dismissed IPs drop out of the offender list and `exclusions.txt`.
 - **Claim outcomes** — record when a package was filed and what Google credited, so assistants can report on it.
 - **Google Ads campaign export as an input** — campaign and keyword CSV from the Ads UI for the window, so the evidence file can carry campaign names and a per-click CPC you supply. Enables two economic rules (budget-attack timing, CTR/conversion divergence).

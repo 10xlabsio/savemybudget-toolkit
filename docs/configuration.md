@@ -7,9 +7,10 @@ All settings are environment variables, read at start. Values you change in the 
 | `SMB_PUBLIC_URL` | — (required) | The URL the tag posts to, e.g. `https://t.example.com`. Used in the snippet, the setup check, and as the address AI assistants sign in to. |
 | `SMB_TZ` | `UTC` | Timezone for windows and the summary. IANA name. |
 | `SMB_PORT` | `8080` | Port the process listens on. |
-| `SMB_BIND` | `127.0.0.1` | Interface to bind. Compose sets `0.0.0.0` inside the container network; Caddy exposes only `/collect`, `/sdk` and `/mcp`. |
+| `SMB_BIND` | `127.0.0.1` | Interface to bind. Compose sets `0.0.0.0` inside the container network; Caddy exposes only `/collect`, `/sdk`, `/mcp` and the two OAuth discovery paths under `/.well-known/`. |
 | `SMB_DATA_DIR` | `/data` | SQLite file, uploads, packages. Mount a volume here. |
-| `SMB_TRUST_PROXY` | `0` | Set `1` when behind Caddy or another proxy so the visitor IP is taken from `X-Forwarded-For` — the **last** hop, the one your proxy appended; anything a client wrote before it is ignored. Rate limits are per visitor: 120 a minute keyed on this client address (IPv6 by /64), plus a 6,000-a-minute cap per connecting address in case something reaches the port directly and makes up the header. Only set it when a proxy you control is the only thing that can reach the port. Compose sets it. |
+| `SMB_TRUST_PROXY` | `0` | Set `1` when behind Caddy or another proxy so the visitor IP is taken from `X-Forwarded-For` — the **last** hop, the one your proxy appended; anything a client wrote before it is ignored. The header is believed only from a trusted proxy address (next row); anyone else is recorded and rate-limited on their own connecting address. Rate limits are per visitor: 120 a minute (IPv6 per /64). Compose sets it. |
+| `SMB_TRUSTED_PROXIES` | `private` | Which connecting addresses may speak for the visitor through `X-Forwarded-For`, with `SMB_TRUST_PROXY=1`: `private` (loopback and private ranges — where Caddy sits in the Compose file) or a comma-separated list of addresses and CIDR ranges for a proxy elsewhere. |
 | `SMB_RETENTION_DAYS` | `90` | Days to keep click records. Minimum 60. |
 | `SMB_MAX_UPLOAD_MB` | `100` | Upload size cap, uncompressed. |
 | `SMB_STORE_WARN_MB` | `2048` | Show a notice when the data directory exceeds this. |
@@ -64,8 +65,11 @@ t.example.com {
     handle /sdk/* {
         reverse_proxy toolkit:8080
     }
-    @mcp path /mcp /mcp/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/* /.well-known/oauth-authorization-server /.well-known/oauth-authorization-server/* /.well-known/openid-configuration
+    @mcp path /mcp /mcp/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/* /.well-known/oauth-authorization-server /.well-known/oauth-authorization-server/*
     handle @mcp {
+        request_body {
+            max_size 1MB
+        }
         reverse_proxy toolkit:8080
     }
     handle {
@@ -74,7 +78,7 @@ t.example.com {
 }
 ```
 
-Replace `t.example.com` with your subdomain. Caddy obtains and renews the certificate on its own. `/mcp` is the endpoint for AI assistants, and the `/.well-known/oauth-*` paths are how Claude's connectors find its sign-in page; all of them answer 404 until you turn it on, and then require the token — see [AI assistants](ai-assistants.md). Installs from before 1.1.0 need the `@mcp` block added to reach it from another machine.
+Replace `t.example.com` with your subdomain. Caddy obtains and renews the certificate on its own. `/mcp` is the endpoint for AI assistants, and the `/.well-known/oauth-*` paths are how Claude's connectors find its sign-in page. All of them answer 404 until you turn AI assistants on. After that the two discovery documents are public (they only describe the endpoints) and everything that returns data needs the token or a sign-in made with it — see [AI assistants](ai-assistants.md). Request bodies on these paths are capped at 1 MB. Installs from before 1.1.0 need the `@mcp` block added to reach it from another machine.
 
 ## Exposing the UI
 
@@ -91,7 +95,7 @@ ui.example.com {
 
 ## Behind your own reverse proxy
 
-Point `/collect`, `/sdk/` and (for AI assistants) `/mcp` plus `/.well-known/oauth-protected-resource*`, `/.well-known/oauth-authorization-server*` and `/.well-known/openid-configuration` at the toolkit's port, forward `X-Forwarded-For`, set `SMB_TRUST_PROXY=1`, and keep everything else off the internet. TLS is required on the public URL: browsers won't post beacons from an HTTPS page to an HTTP endpoint.
+Point `/collect`, `/sdk/` and (for AI assistants) `/mcp` plus `/.well-known/oauth-protected-resource*` and `/.well-known/oauth-authorization-server*` at the toolkit's port, forward `X-Forwarded-For`, set `SMB_TRUST_PROXY=1` (and `SMB_TRUSTED_PROXIES` if the proxy doesn't connect from a private address), and keep everything else off the internet. TLS is required on the public URL: browsers won't post beacons from an HTTPS page to an HTTP endpoint.
 
 ## Running without Docker
 

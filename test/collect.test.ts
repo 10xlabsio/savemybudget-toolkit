@@ -195,18 +195,35 @@ describe('collect', () => {
     } finally { config.trustProxy = was; resetRateLimit(); }
   });
 
-  it('H1: a direct client rotating X-Forwarded-For is capped by the per-connection backstop', async () => {
+  it('H1: X-Forwarded-For is believed only from a trusted proxy — a direct client rotating it is one visitor', async () => {
     const { config } = await import('../src/config.js');
     const was = config.trustProxy;
     config.trustProxy = true;
-    resetRateLimit({ perConnection: 150 });
+    resetRateLimit();
     try {
       const b = getCounter('collect_ratelimited');
-      for (let i = 0; i < 150; i++) await post('/v1/beacon', base('load', 'k-collect', 'rlx-' + i), '198.51.100.9', { 'x-forwarded-for': `1.1.${i >> 8}.${i & 255}` });
+      for (let i = 0; i < 120; i++) await post('/v1/beacon', base('load', 'k-collect', 'rlx-' + i), '198.51.100.9', { 'x-forwarded-for': `1.1.${i >> 8}.${i & 255}` });
+      assert.equal(row(siteId, 'rlx-0')[0].ip, '198.51.100.9', 'a public peer is not a proxy: its own address is recorded');
       await post('/v1/beacon', base('load', 'k-collect', 'rlx-over'), '198.51.100.9', { 'x-forwarded-for': '2.2.2.2' });
       assert.equal(getCounter('collect_ratelimited'), b + 1);
       assert.equal(row(siteId, 'rlx-over').length, 0);
     } finally { config.trustProxy = was; resetRateLimit(); }
+  });
+
+  it('SMB_TRUSTED_PROXIES names the proxies to believe; a non-address rightmost hop falls back to the socket', async () => {
+    const { config } = await import('../src/config.js');
+    const was = { t: config.trustProxy, p: config.trustedProxies };
+    config.trustProxy = true;
+    try {
+      (config as any).trustedProxies = '203.0.113.5, 2001:db8:aa::/48';
+      await post('/v1/beacon', base('load', 'k-collect', 'tp-1'), '203.0.113.5', { 'x-forwarded-for': '81.4.4.4' });
+      assert.equal(row(siteId, 'tp-1')[0].ip, '81.4.4.4', 'listed public proxy is believed');
+      await post('/v1/beacon', base('load', 'k-collect', 'tp-2'), '10.0.0.2', { 'x-forwarded-for': '81.4.4.5' });
+      assert.equal(row(siteId, 'tp-2')[0].ip, '10.0.0.2', 'private ranges are trusted only by default, not when a list is given');
+      (config as any).trustedProxies = 'private';
+      await post('/v1/beacon', base('load', 'k-collect', 'tp-3'), '10.0.0.2', { 'x-forwarded-for': '81.4.4.6, unknown' });
+      assert.equal(row(siteId, 'tp-3')[0].ip, '10.0.0.2', 'never a client-written hop');
+    } finally { config.trustProxy = was.t; (config as any).trustedProxies = was.p; }
   });
 
   it('IPv6 visitors are limited per /64', async () => {

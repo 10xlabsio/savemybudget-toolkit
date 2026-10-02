@@ -26,7 +26,7 @@ Needs the public URL set (Settings → Instance) and the Caddyfile's `@mcp` bloc
 2. Give it a name and paste `https://t.example.com/mcp`. Leave the advanced OAuth fields empty.
 3. Choose **Connect**. A page on your toolkit opens and names the app asking; paste the token and choose **Connect**.
 
-The assistant stays signed in (access for an hour at a time, renewed for up to 30 days of use). Settings → AI assistants lists signed-in assistants and has **Sign out all**. A new token, or Turn off, signs every assistant out.
+The assistant stays signed in as long as it's used at least once every 30 days (its access is renewed hourly). Settings → AI assistants lists signed-in assistants and has **Sign out all**. A new token, or Turn off, signs every assistant out.
 
 **Claude Code**
 
@@ -102,11 +102,11 @@ The assistant sees what the UI shows, including full visitor IPs, so treat the t
 
 ## How sign-in works
 
-Standard OAuth 2.1 with the pieces MCP clients expect: protected-resource and authorization-server metadata under `/.well-known/` on your tag subdomain (built from the public URL, never from the request), dynamic client registration, the authorization-code flow with PKCE (S256 only), single-use rotating refresh tokens (replaying an old one ends that sign-in), and revocation. Only hashes of codes, tokens and client secrets are stored. Every sign-in is tied to the current token, which is why a new token signs everyone out. Wrong tokens on the sign-in page are rate limited and counted with the others.
+Standard OAuth 2.1 with the pieces MCP clients expect: protected-resource and authorization-server metadata under `/.well-known/` on your tag subdomain (built from the public URL, never from the request), dynamic client registration, the authorization-code flow with PKCE (S256 only), single-use rotating refresh tokens (replaying an old one ends that sign-in), and revocation. The sign-in page names the app as "an app calling itself …" and shows where it returns; if that isn't Claude or this computer it warns you — only continue if you started the connection yourself. A malformed request shows an error rather than sending you anywhere. Only hashes of codes, tokens and client secrets are stored. Every sign-in is tied to the current token, which is why a new token signs everyone out. Wrong tokens on the sign-in page are rate limited and counted with the others.
 
 ## Limits
 
-120 messages a minute per client (each message in a batch counts; IPv6 clients by /64), with failed sign-ins limited separately so someone guessing can't lock you out; 1 MiB per request, 50 messages per batch, 200 leads per `match_leads` call. Analyses are computed on request and reused for up to 60 seconds; imports, deletions and site edits take effect immediately. `run_analysis` returns an analysis saved in the last 24 hours only if the data still gives the same counts.
+120 messages a minute per client (each message in a batch counts; IPv6 clients by /64); a client that sends 120 wrong or missing tokens in a minute is paused for the rest of it; 1 MiB per request, 50 messages per batch, 200 leads per `match_leads` call. Analyses are computed on request and reused for up to 60 seconds; imports, deletions and site edits take effect immediately. `run_analysis` returns an analysis saved in the last 24 hours only if the data still gives the same counts.
 
 ## Troubleshooting
 

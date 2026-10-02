@@ -8,9 +8,11 @@ import { config } from './config.js';
 import { db } from './db.js';
 import { startJobs, stopJobs, log } from './jobs/index.js';
 import * as telemetry from './telemetry/index.js';
+import { syncInstanceToken } from './mcp/oauth.js';
 
 db();
 telemetry.instanceId();
+syncInstanceToken(); // a changed SMB_MCP_TOKEN signs every assistant out
 
 if (telemetry.enabled()) {
   console.log('Anonymous usage counts are on — see TELEMETRY.md. Set SMB_TELEMETRY=off to disable.');

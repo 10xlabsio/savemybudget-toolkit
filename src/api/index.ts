@@ -16,7 +16,7 @@ import { runAnalysis, saveAnalysis, loadAnalysis } from '../rules/index.js';
 import { dismissNotification, retentionDays, clearNotifications, log } from '../jobs/index.js';
 import * as telemetry from '../telemetry/index.js';
 import { issueToken, revokeToken, tokenSource } from '../mcp/token.js';
-import { signOutAllAssistants } from '../mcp/oauth.js';
+import { signOutAllAssistants, syncInstanceToken } from '../mcp/oauth.js';
 import { COUNTRY_CODES, bytes, makeSiteKey, parseBufferedForm, validateHost, type AppEnv } from '../ui.js';
 
 export const api = new Hono<AppEnv>();
@@ -230,6 +230,7 @@ function mcpTokenRoute(c: { redirect(location: string, status: 303): Response })
   if (tokenSource() === 'env') return c.redirect('/settings?mcp=env#ai-assistants', 303);
   signOutAllAssistants();
   issueToken();
+  syncInstanceToken();
   return c.redirect('/settings?mcp=new#ai-assistants', 303);
 }
 api.post('/mcp/enable', (c) => mcpTokenRoute(c));
@@ -238,6 +239,7 @@ api.post('/mcp/disable', (c) => {
   if (tokenSource() === 'env') return c.redirect('/settings?mcp=env#ai-assistants', 303);
   revokeToken();
   signOutAllAssistants();
+  syncInstanceToken();
   return c.redirect('/settings?mcp=off#ai-assistants', 303);
 });
 api.post('/mcp/signout', (c) => {

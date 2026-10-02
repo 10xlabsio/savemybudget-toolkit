@@ -167,13 +167,15 @@ describe('mcp', () => {
     assert.equal(tokenSource(), 'settings');
   });
 
-  it('rate limits per client, counts each batch message, and keeps failed sign-ins in their own bucket', async () => {
+  it('rate limits per client, counts each batch message, and pauses a client that keeps guessing', async () => {
     resetMcpRateLimit(3);
     for (let i = 0; i < 3; i++) assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'wrong', '192.0.2.9')).status, 401);
     assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, 'wrong', '192.0.2.9')).status, 429, 'guessing is capped');
-    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.9')).status, 200, 'the scanner did not lock out the token holder');
+    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.9')).status, 429, 'even a right guess from that client waits out the minute');
+    assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.11')).status, 200, 'other clients are unaffected');
     const batch = Array.from({ length: 3 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'ping' }));
-    const r = await post(batch, TOKEN, '192.0.2.9');
+    await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.12');
+    const r = await post(batch, TOKEN, '192.0.2.12');
     assert.equal(r.status, 429, 'a batch of 3 after 1 call exceeds 3 messages');
     assert.equal(r.headers.get('retry-after'), '60');
     assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'ping' }, TOKEN, '192.0.2.10')).status, 200, 'another client is unaffected');

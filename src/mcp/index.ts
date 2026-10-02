@@ -7,8 +7,9 @@
  *
  * Off until a token exists (Settings → AI assistants, or SMB_MCP_TOKEN): until then every /mcp request is a
  * plain 404. With a token: Authorization: Bearer <token> on every request; 120 messages a minute per client
- * (each message in a batch counts), failed sign-ins limited separately so a scanner can't lock the operator
- * out; bodies up to 1 MiB, batches up to 50 messages. IPv6 clients are keyed by their /64.
+ * (each message in a batch counts); a client with 120 wrong or missing tokens in a minute is paused for the rest
+ * of it; bodies up to 1 MiB, batches up to 50 messages. Clients are keyed by address (IPv6 by /64), as seen
+ * through a trusted proxy.
  */
 import { Hono, type Context } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
@@ -87,15 +88,17 @@ mcpApp.on(['GET', 'DELETE'], '/', (c) => {
 mcpApp.post('/', async (c) => {
   if (!mcpEnabled()) return notFound(c);
   const key = clientKey(c);
+  // A client that keeps getting the token wrong is paused, even if its next guess is right.
+  if (failedSignIns.peek(key)) return tooMany(c);
   const m = /^Bearer\s+(\S+)$/i.exec(c.req.header('authorization') ?? '');
   // The instance token itself (Claude Code, Cursor, scripts) or a token an assistant got by signing in (claude.ai).
   if (!m || !(tokenMatches(m[1]) || verifyAccessToken(m[1]))) {
-    if (failedSignIns(key)) return tooMany(c);
+    failedSignIns(key);
     bumpCounter('mcp_unauthorized');
     // The resource_metadata pointer is what starts sign-in in clients that can't send a fixed token.
     const origin = oauthOrigin();
     c.header('www-authenticate', `Bearer realm="savemybudget-toolkit"${m ? ', error="invalid_token"' : ''}${origin ? `, resource_metadata="${resourceMetadataUrl(origin)}"` : ''}`);
-    return c.json({ error: 'unauthorized', error_description: 'Send the toolkit token as a Bearer token, or sign in (see /docs/ai-assistants).' }, 401);
+    return c.json({ error: 'unauthorized', error_description: 'Send the toolkit token as a Bearer token, or sign in. How to connect: https://github.com/10xlabsio/savemybudget-toolkit/blob/main/docs/ai-assistants.md' }, 401);
   }
   if (limited(key)) return tooMany(c);
 

@@ -18,6 +18,8 @@ export const config = {
   bind: env('SMB_BIND', '127.0.0.1'),
   dataDir: env('SMB_DATA_DIR', join(process.cwd(), 'data')),
   trustProxy: env('SMB_TRUST_PROXY', '0') === '1',
+  /** Addresses whose X-Forwarded-For is believed (with SMB_TRUST_PROXY=1). Default: loopback and private ranges. */
+  trustedProxies: env('SMB_TRUSTED_PROXIES', 'private'),
   retentionDays: Math.max(60, Number(env('SMB_RETENTION_DAYS', '90'))),
   maxUploadMb: Number(env('SMB_MAX_UPLOAD_MB', '100')),
   storeWarnMb: Number(env('SMB_STORE_WARN_MB', '2048')),

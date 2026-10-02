@@ -2,16 +2,17 @@
 
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [1.1.0] — unreleased
+## [1.1.0] — 2026-10-02
 
 ### Added
 - **AI assistants (MCP).** `/mcp` serves Claude Code, Claude Desktop, Cursor and other MCP clients over Streamable HTTP: 13 tools (sites and tag health, summaries, flagged clicks, breakdowns, repeat offenders, IP history, CRM lead matching, saved analyses, claim window, notices, rules, run analysis, build claim package) and 3 prompts (audit CRM leads, weekly summary, prepare a claim). Off until a token is created in Settings → AI assistants or set as `SMB_MCP_TOKEN`. See [docs/ai-assistants.md](docs/ai-assistants.md).
 - **Sign-in for Claude's custom connectors.** claude.ai, Claude Desktop and Claude mobile can add the toolkit as a custom connector: they sign in with OAuth 2.1 (registration, PKCE, rotating refresh tokens) on a page where you paste the token once. Settings lists signed-in assistants and can sign them all out; a new token signs everyone out.
-- Caddyfile forwards `/mcp` and the OAuth discovery paths under `/.well-known/` (an `@mcp` path matcher). Existing installs: add the block to reach them from another machine.
+- Caddyfile forwards `/mcp` and the two OAuth discovery paths under `/.well-known/` (an `@mcp` path matcher, request bodies capped at 1 MB). Existing installs: add the block to reach them from another machine.
 - Settings counters `mcp_calls`, `mcp_unauthorized` and `mcp_signins`; the daily heartbeat reports whether MCP is on and the call count.
 
 ### Fixed
-- Collector rate limit behind a proxy: with `SMB_TRUST_PROXY=1` the 120-a-minute limit is now per visitor (the hop the proxy appended; IPv6 per /64) instead of per connection. Behind Caddy every beacon arrives from Caddy's address, so the whole instance shared one 120-a-minute bucket and a busy site — or a distributed click burst — lost beacons as `collect_ratelimited`. A 6,000-a-minute cap per connecting address remains for clients that reach the port directly.
+- Collector rate limit behind a proxy: with `SMB_TRUST_PROXY=1` the 120-a-minute limit is now per visitor (the hop the proxy appended; IPv6 per /64) instead of per connection. Behind Caddy every beacon arrives from Caddy's address, so the whole instance shared one 120-a-minute bucket and a busy site — or a distributed click burst — lost beacons as `collect_ratelimited`.
+- `X-Forwarded-For` is believed only from a trusted proxy address: new `SMB_TRUSTED_PROXIES`, default loopback and private ranges (where Caddy sits in the Compose file). A client reaching the port directly is recorded and limited on its own address. If your proxy connects from a public address, list it there. A rightmost hop that isn't an address now falls back to the connecting address rather than an earlier, client-written hop.
 - IPv6 /64 grouping (subnet clustering, top ranges) expands compressed addresses first, so `2001:db8::1` and `2001:db8:0:0::2` land in the same range.
 
 ## [1.0.0] — 2026-09-29

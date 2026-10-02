@@ -6,7 +6,7 @@
  * (Settings → AI assistants) into a page served here; the assistant then gets its own short-lived tokens.
  *
  *   GET  /.well-known/oauth-protected-resource[/mcp]    RFC 9728, points at this origin as the authorization server
- *   GET  /.well-known/oauth-authorization-server[/mcp]  RFC 8414 metadata (also served as openid-configuration)
+ *   GET  /.well-known/oauth-authorization-server[/mcp]  RFC 8414 metadata
  *   POST /mcp/oauth/register                            RFC 7591 dynamic client registration
  *   GET  /mcp/oauth/authorize, POST                     code flow; PKCE S256 required; the page asks for the token
  *   POST /mcp/oauth/token                               authorization_code and refresh_token (single-use, rotating)
@@ -23,10 +23,11 @@ import type { Context, Hono } from 'hono';
 import { Hono as HonoApp } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { db, bumpCounter, now as nowIso } from '../db.js';
+import { getCookie, setCookie } from 'hono/cookie';
+import { db, bumpCounter, getSetting, setSetting, now as nowIso } from '../db.js';
 import { clientIp, clientKey } from '../collect/index.js';
 import { makeRateLimiter } from '../ratelimit.js';
-import { publicUrl } from '../ui.js';
+import { publicUrl, readBodyCapped } from '../ui.js';
 import { mcpEnabled, tokenFingerprint, tokenMatches } from './token.js';
 
 export const ACCESS_TTL_S = 3600;
@@ -34,6 +35,8 @@ export const REFRESH_TTL_S = 30 * 24 * 3600;
 export const CODE_TTL_S = 600;
 export const SCOPE = 'toolkit';
 const MAX_CLIENTS = 500;
+const BODY_CAP = 64 * 1024;
+const NONCE_COOKIE = 'smb_oauth';
 const DOCS_URL = 'https://github.com/10xlabsio/savemybudget-toolkit/blob/main/docs/ai-assistants.md';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
@@ -71,7 +74,17 @@ export function redirectUriAllowed(uri: string): boolean {
   if (scheme === 'https') return true;
   if (scheme === 'http') return LOOPBACK.includes(u.hostname);
   if (['javascript', 'data', 'vbscript', 'file', 'blob', 'about', 'ftp', 'ws', 'wss'].includes(scheme)) return false;
+  // Schemes that open a web page in a browser would turn the code into a redirect to any site.
+  if (BROWSER_LAUNCH.has(scheme)) return false;
   return /^[a-z][a-z0-9+.-]*$/.test(scheme);
+}
+const BROWSER_LAUNCH = new Set(['microsoft-edge', 'microsoft-edge-holographic', 'googlechrome', 'googlechromes', 'x-safari-http', 'x-safari-https',
+  'firefox', 'firefox-private', 'opera-http', 'opera-https', 'brave', 'vivaldi', 'intent', 'android-app', 'ms-browser-extension', 'x-web-search']);
+
+/** App names come from the app: drop control and format characters (bidi overrides, zero-width) and squeeze spaces. */
+export function cleanName(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').replace(/\s+/g, ' ').trim() : '';
+  return (s || 'An AI assistant').slice(0, 80);
 }
 
 /** Exact match, except loopback redirects match on any port (native apps pick a free port per run, RFC 8252 §7.3). */
@@ -143,12 +156,27 @@ export function signOutAllAssistants(): void {
 
 const revokeFamily = (family: string) => db().prepare('UPDATE oauth_tokens SET revoked_at = ? WHERE family = ? AND revoked_at IS NULL').run(nowIso(), family);
 
-/** Hourly: drop expired codes and tokens, and registrations that never signed in. */
+/**
+ * Hourly: drop expired codes and tokens, and registrations that never completed a sign-in. Apps that did sign in
+ * keep their registration, so a connector can sign in again after Sign out all or a new token.
+ */
 export function sweepOAuth(nowMs = Date.now()): void {
   const d = db();
-  d.prepare('DELETE FROM oauth_codes WHERE expires_at < ? OR used_at IS NOT NULL').run(iso(nowMs - 3600e3));
+  d.prepare('DELETE FROM oauth_codes WHERE expires_at < ?').run(iso(nowMs - 86400e3));
   d.prepare('DELETE FROM oauth_tokens WHERE expires_at < ? OR revoked_at < ?').run(iso(nowMs), iso(nowMs - 86400e3));
-  d.prepare('DELETE FROM oauth_clients WHERE created_at < ? AND id NOT IN (SELECT DISTINCT client_id FROM oauth_tokens)').run(iso(nowMs - 86400e3));
+  d.prepare('DELETE FROM oauth_clients WHERE last_used_at IS NULL AND created_at < ? AND id NOT IN (SELECT client_id FROM oauth_codes)').run(iso(nowMs - 86400e3));
+}
+
+const FP_KEY = 'mcp_token_fp_seen';
+/**
+ * Call at start-up and whenever the token may have changed: if the instance token isn't the one sign-ins were last
+ * issued under (say SMB_MCP_TOKEN went A → B), everyone is signed out — so going back to A later can't revive them.
+ */
+export function syncInstanceToken(): void {
+  const fp = tokenFingerprint() ?? '';
+  const seen = getSetting(FP_KEY);
+  if (seen !== null && seen !== fp) signOutAllAssistants();
+  if (seen !== fp) setSetting(FP_KEY, fp);
 }
 
 // ---------------------------------------------------------------- discovery (mounted at /.well-known)
@@ -186,7 +214,7 @@ const asMeta = (c: Context) => {
   });
 };
 for (const p of ['/oauth-protected-resource', '/oauth-protected-resource/mcp']) { wellKnownApp.get(p, prm); wellKnownApp.options(p, (c) => (available() ? (cors(c), c.body(null, 204)) : off(c))); }
-for (const p of ['/oauth-authorization-server', '/oauth-authorization-server/mcp', '/openid-configuration']) { wellKnownApp.get(p, asMeta); wellKnownApp.options(p, (c) => (available() ? (cors(c), c.body(null, 204)) : off(c))); }
+for (const p of ['/oauth-authorization-server', '/oauth-authorization-server/mcp']) { wellKnownApp.get(p, asMeta); wellKnownApp.options(p, (c) => (available() ? (cors(c), c.body(null, 204)) : off(c))); }
 wellKnownApp.all('*', off);
 
 // ---------------------------------------------------------------- pages
@@ -195,26 +223,30 @@ const PAGE_CSS = `*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,
 main{max-width:460px;margin:48px auto;padding:0 16px}.card{background:#fff;border:1px solid #e3e6ec;border-radius:10px;padding:24px}
 .brand{font-size:13px;color:#5b6475;margin-bottom:12px}h1{font-size:20px;margin:0 0 12px}ul{padding-left:20px;margin:8px 0 16px}li{margin:4px 0}
 label{display:block;font-weight:600;margin:16px 0 6px}input[type=password]{width:100%;padding:10px;border:1px solid #c9ced8;border-radius:6px;font:14px ui-monospace,monospace}
-.hint{font-size:13px;color:#5b6475}.err{background:#fdecec;color:#9b1c1c;border-radius:6px;padding:10px;margin:12px 0}.row{display:flex;gap:8px;margin-top:18px}
+.hint{font-size:13px;color:#5b6475}.warn{background:#fff6e0;color:#7a4b00;border-radius:6px;padding:10px;margin:12px 0}code{font:13px ui-monospace,monospace;word-break:break-all}.err{background:#fdecec;color:#9b1c1c;border-radius:6px;padding:10px;margin:12px 0}.row{display:flex;gap:8px;margin-top:18px}
 button{padding:10px 16px;border-radius:6px;border:1px solid #c9ced8;background:#fff;font:inherit;cursor:pointer}button.pri{background:#1f6f43;border-color:#1f6f43;color:#fff}
 @media (prefers-color-scheme:dark){body{background:#12151b;color:#e6e9ef}.card{background:#1a1e26;border-color:#2b313d}.brand,.hint{color:#9aa3b2}
-input[type=password]{background:#12151b;color:#e6e9ef;border-color:#3a4150}button{background:#1a1e26;color:#e6e9ef;border-color:#3a4150}.err{background:#3a1717;color:#f3b4b4}}`;
+input[type=password]{background:#12151b;color:#e6e9ef;border-color:#3a4150}button{background:#1a1e26;color:#e6e9ef;border-color:#3a4150}.err{background:#3a1717;color:#f3b4b4}.warn{background:#3a2c10;color:#f3d48a}}`;
 
 function Shell(p: { title: string; children: unknown }) {
   return (
     <html lang="en">
-      <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><meta name="referrer" content="no-referrer" /><title>{p.title}</title><style>{PAGE_CSS}</style></head>
+      <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><meta name="referrer" content="no-referrer" /><title>{p.title}</title><style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} /></head>
       <body><main><div class="card">{p.children}</div></main></body>
     </html>
   );
 }
 
-function ConsentPage(p: { host: string; clientName: string; redirectHost: string; hidden: Record<string, string>; error?: string | null }) {
+function ConsentPage(p: { host: string; clientName: string; redirect: { host: string; full: string | null; familiar: boolean }; hidden: Record<string, string>; error?: string | null }) {
   return (
     <Shell title={`Connect ${p.clientName} — SaveMyBudget Toolkit`}>
       <div class="brand">SaveMyBudget Toolkit · {p.host}</div>
-      <h1>Connect {p.clientName}?</h1>
-      <p>After you connect, you go back to <b>{p.redirectHost}</b>. The assistant will be able to:</p>
+      <h1>Connect “{p.clientName}”?</h1>
+      <p>An app calling itself “{p.clientName}” wants to use this toolkit. After you connect, you go back to <b>{p.redirect.host}</b>{p.redirect.full ? <> (<code>{p.redirect.full}</code>)</> : null}.</p>
+      {p.redirect.familiar ? null : (
+        <div class="warn">It returns to {p.redirect.host}, not to Claude or this computer. Only continue if you started this connection yourself, just now, from that app.</div>
+      )}
+      <p>It will be able to:</p>
       <ul>
         <li>see your sites, tag health and click totals</li>
         <li>see flagged clicks, with full visitor IPs and the rules that fired</li>
@@ -264,30 +296,44 @@ let wrongTokens = makeRateLimiter(30, 60_000);
 /** For tests. */
 export function resetOAuthLimits(): void { registrations = makeRateLimiter(30, 3_600_000); wrongTokens = makeRateLimiter(30, 60_000); }
 
+/** Request bodies here are small; read them under a cap before parsing (JSON or form). Null = too large. */
+async function cappedBody(c: Context): Promise<Record<string, unknown> | null> {
+  const buf = await readBodyCapped(c.req.raw, BODY_CAP);
+  if (buf === null) return null;
+  const text = buf.toString('utf8');
+  if ((c.req.header('content-type') ?? '').includes('application/json')) {
+    try { const j = JSON.parse(text); return j && typeof j === 'object' && !Array.isArray(j) ? j : {}; } catch { return {}; }
+  }
+  return Object.fromEntries(new URLSearchParams(text));
+}
+const tooLarge = (c: Context) => c.json({ error: 'invalid_request', error_description: 'Request body too large.' }, 413);
+
 export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
   const keyOf = (c: Context) => clientKey(clientIp(c as never));
 
   app.post('/oauth/register', async (c) => {
     if (!available()) return off(c);
     if (registrations(keyOf(c))) return c.json({ error: 'invalid_client_metadata', error_description: 'Too many registrations from this address; try again later.' }, 429);
-    let body: Record<string, unknown>;
-    try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_client_metadata', error_description: 'Body must be JSON.' }, 400); }
-    if (!body || typeof body !== 'object') return c.json({ error: 'invalid_client_metadata', error_description: 'Body must be a JSON object.' }, 400);
+    const body = await cappedBody(c);
+    if (body === null) return tooLarge(c);
     const uris = Array.isArray(body.redirect_uris) ? body.redirect_uris.filter((u): u is string => typeof u === 'string') : [];
     if (uris.length === 0 || uris.length > 10 || uris.some((u) => u.length > 2000 || !redirectUriAllowed(u))) {
       return c.json({ error: 'invalid_redirect_uri', error_description: 'redirect_uris must be https URLs, http on localhost, or a native app scheme.' }, 400);
     }
     const method = typeof body.token_endpoint_auth_method === 'string' ? body.token_endpoint_auth_method : 'none';
     if (!['none', 'client_secret_post', 'client_secret_basic'].includes(method)) return c.json({ error: 'invalid_client_metadata', error_description: 'Unsupported token_endpoint_auth_method.' }, 400);
-    const grants = Array.isArray(body.grant_types) ? body.grant_types : ['authorization_code', 'refresh_token'];
-    if (grants.some((g) => g !== 'authorization_code' && g !== 'refresh_token')) return c.json({ error: 'invalid_client_metadata', error_description: 'Only authorization_code and refresh_token are supported.' }, 400);
+    // Keep the grant types we support and ignore the rest (some clients also list device_code and the like).
+    const grants = Array.isArray(body.grant_types) ? body.grant_types.filter((g) => g === 'authorization_code' || g === 'refresh_token') : ['authorization_code'];
+    if (!grants.includes('authorization_code')) return c.json({ error: 'invalid_client_metadata', error_description: 'This server supports the authorization_code grant (with refresh_token).' }, 400);
     const d = db();
     const count = (d.prepare('SELECT COUNT(*) AS n FROM oauth_clients').get() as { n: number }).n;
     if (count >= MAX_CLIENTS) {
-      d.prepare('DELETE FROM oauth_clients WHERE id IN (SELECT id FROM oauth_clients WHERE id NOT IN (SELECT DISTINCT client_id FROM oauth_tokens) ORDER BY created_at LIMIT 50)').run();
+      // Evict the oldest registrations that never signed in and aren't mid-sign-in (no code, older than an hour).
+      d.prepare(`DELETE FROM oauth_clients WHERE id IN (SELECT id FROM oauth_clients WHERE last_used_at IS NULL AND created_at < ?
+        AND id NOT IN (SELECT client_id FROM oauth_codes) ORDER BY created_at LIMIT 50)`).run(iso(Date.now() - 3600e3));
       if ((d.prepare('SELECT COUNT(*) AS n FROM oauth_clients').get() as { n: number }).n >= MAX_CLIENTS) return c.json({ error: 'invalid_client_metadata', error_description: 'Too many registered apps on this toolkit.' }, 429);
     }
-    const name = (typeof body.client_name === 'string' && body.client_name.trim() ? body.client_name.trim() : 'An AI assistant').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80);
+    const name = cleanName(body.client_name);
     const id = `mcpc_${b64url(randomBytes(18))}`;
     const secret = method === 'none' ? null : newSecret('smbt_cs');
     d.prepare('INSERT INTO oauth_clients(id, secret_hash, auth_method, name, redirect_uris, created_at) VALUES(?,?,?,?,?,?)').run(id, secret ? sha256(secret) : null, method, name, JSON.stringify(uris), nowIso());
@@ -301,6 +347,7 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
 
   type Authz = { client: ClientRow; redirectUri: string; state: string | null; challenge: string; resource: string | null };
 
+  /** Only after the request is valid and the form came from this browser: the code, or access_denied on Cancel. */
   const redirectWith = (c: Context, origin: string, redirectUri: string, params: Record<string, string | null>) => {
     const u = new URL(redirectUri);
     for (const [k, v] of Object.entries(params)) if (v !== null) u.searchParams.set(k, v);
@@ -308,48 +355,73 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     return c.redirect(u.toString(), 302);
   };
 
-  /** Errors before the redirect URI is trusted render a page; after, they go back to the app. */
+  /**
+   * A bad request gets a page here, never a redirect: anyone can register an app with any https return address,
+   * so redirecting on errors would make this page an open redirect on the operator's own domain. Unknown scopes
+   * are ignored — there is one level of access.
+   */
   const validate = async (c: Context, origin: string, q: (k: string) => string | undefined): Promise<Authz | Response> => {
+    const fail = (message: string) => page(c, <ErrorPage message={message} />, 400);
     const client = clientById(q('client_id') ?? '');
-    if (!client) return page(c, <ErrorPage message="It comes from an app this toolkit doesn't recognise. Start the connection again from your AI assistant." />, 400);
+    if (!client) return fail("It comes from an app this toolkit doesn't recognise. Start the connection again from your AI assistant.");
     const redirectUri = q('redirect_uri') ?? (client.redirect_uris.length === 1 ? client.redirect_uris[0] : '');
-    if (!redirectMatches(client.redirect_uris, redirectUri)) return page(c, <ErrorPage message="Its return address doesn't match the app's registration. Start the connection again from your AI assistant." />, 400);
-    const state = q('state') ?? null;
-    if (q('response_type') !== 'code') return redirectWith(c, origin, redirectUri, { error: 'unsupported_response_type', state });
+    if (!redirectMatches(client.redirect_uris, redirectUri)) return fail("Its return address doesn't match the app's registration. Start the connection again from your AI assistant.");
+    if (q('response_type') !== 'code') return fail('The app asked for a kind of sign-in this toolkit doesn\'t offer (response_type must be code).');
     const challenge = q('code_challenge') ?? '';
-    if (!/^[A-Za-z0-9_-]{43,128}$/.test(challenge) || q('code_challenge_method') !== 'S256') return redirectWith(c, origin, redirectUri, { error: 'invalid_request', error_description: 'PKCE with S256 is required.', state });
-    const scope = q('scope');
-    if (scope && scope.split(/\s+/).some((s) => s && s !== SCOPE && s !== 'offline_access')) return redirectWith(c, origin, redirectUri, { error: 'invalid_scope', state });
+    if (!/^[A-Za-z0-9_-]{43,128}$/.test(challenge) || q('code_challenge_method') !== 'S256') return fail('The app didn\'t use PKCE with S256, which this toolkit requires.');
     const resource = q('resource') ?? null;
-    if (!resourceOk(origin, resource)) return redirectWith(c, origin, redirectUri, { error: 'invalid_target', error_description: `This toolkit's address is ${resourceUrl(origin)}.`, state });
-    return { client, redirectUri, state, challenge, resource };
+    if (!resourceOk(origin, resource)) return fail(`The app is trying to connect to a different address. This toolkit's address is ${resourceUrl(origin)}.`);
+    return { client, redirectUri, state: q('state') ?? null, challenge, resource };
   };
 
-  const hiddenFor = (v: Authz, scope: string | undefined) => ({
+  const hiddenFor = (v: Authz, nonce: string) => ({
     client_id: v.client.id, redirect_uri: v.redirectUri, state: v.state ?? '', code_challenge: v.challenge, code_challenge_method: 'S256',
-    response_type: 'code', resource: v.resource ?? '', scope: scope ?? '',
+    response_type: 'code', resource: v.resource ?? '', nonce,
   });
-  const redirectHost = (uri: string) => { try { return new URL(uri).host || uri.split(':')[0]; } catch { return uri.split(':')[0]; } };
+  /** Where the code goes, as the operator should see it: host for https, the full address for anything else. */
+  const describeRedirect = (uri: string) => {
+    let u: URL | null = null;
+    try { u = new URL(uri); } catch { /* registered, so parseable */ }
+    const https = u?.protocol === 'https:';
+    const loopback = u?.protocol === 'http:' && LOOPBACK.includes(u.hostname);
+    const host = (u && (https || loopback) ? u.host : uri.split(':')[0]) || uri;
+    const familiar = loopback || (https && (u!.hostname === 'claude.ai' || u!.hostname.endsWith('.claude.ai')));
+    return { host, full: https ? null : uri, familiar };
+  };
+  /**
+   * The consent form is bound to the browser that loaded it: a random nonce in the form and in a SameSite=Strict
+   * cookie. A page on another site can't post it — so it can't make this toolkit redirect anywhere, even on Cancel.
+   */
+  const issueNonce = (c: Context, origin: string) => {
+    const n = b64url(randomBytes(18));
+    setCookie(c, NONCE_COOKIE, n, { path: '/mcp/oauth', httpOnly: true, sameSite: 'Strict', secure: origin.startsWith('https:'), maxAge: 1800 });
+    return n;
+  };
 
   app.get('/oauth/authorize', async (c) => {
     const origin = oauthOrigin();
     if (!origin || !mcpEnabled()) return off(c);
     const v = await validate(c, origin, (k) => c.req.query(k) || undefined);
     if (v instanceof Response) return v;
-    return page(c, <ConsentPage host={new URL(origin).host} clientName={v.client.name} redirectHost={redirectHost(v.redirectUri)} hidden={hiddenFor(v, c.req.query('scope'))} />);
+    return page(c, <ConsentPage host={new URL(origin).host} clientName={cleanName(v.client.name)} redirect={describeRedirect(v.redirectUri)} hidden={hiddenFor(v, issueNonce(c, origin))} />);
   });
 
   app.post('/oauth/authorize', async (c) => {
     const origin = oauthOrigin();
     if (!origin || !mcpEnabled()) return off(c);
-    const form = await c.req.parseBody().catch(() => ({} as Record<string, unknown>));
-    const q = (k: string) => { const x = (form as Record<string, unknown>)[k]; return typeof x === 'string' && x !== '' ? x : undefined; };
+    const form = await cappedBody(c);
+    if (form === null) return tooLarge(c);
+    const q = (k: string) => { const x = form[k]; return typeof x === 'string' && x !== '' ? x : undefined; };
     const v = await validate(c, origin, q);
     if (v instanceof Response) return v;
+    const nonce = q('nonce') ?? '', cookie = getCookie(c, NONCE_COOKIE) ?? '';
+    if (!nonce || !cookie || !safeEqual(nonce, cookie)) return page(c, <ErrorPage message="This sign-in page has expired or was opened somewhere else. Start the connection again from your AI assistant." />, 400);
     if (q('decision') !== 'allow') return redirectWith(c, origin, v.redirectUri, { error: 'access_denied', state: v.state });
-    const again = (error: string, status: 401 | 429) => page(c, <ConsentPage host={new URL(origin).host} clientName={v.client.name} redirectHost={redirectHost(v.redirectUri)} hidden={hiddenFor(v, q('scope'))} error={error} />, status);
+    const again = (error: string, status: 401 | 429) => page(c, <ConsentPage host={new URL(origin).host} clientName={cleanName(v.client.name)} redirect={describeRedirect(v.redirectUri)} hidden={hiddenFor(v, nonce)} error={error} />, status);
+    // A client that keeps getting the token wrong is paused even if its next guess is right.
+    if (wrongTokens.peek(keyOf(c))) return again('Too many attempts. Wait a minute and try again.', 429);
     if (!tokenMatches(q('token') ?? '')) {
-      if (wrongTokens(keyOf(c))) return again('Too many attempts. Wait a minute and try again.', 429);
+      wrongTokens(keyOf(c));
       bumpCounter('mcp_unauthorized');
       return again("That token doesn't match this toolkit. Copy it again from Settings → AI assistants, or create a new one there.", 401);
     }
@@ -361,12 +433,12 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     return redirectWith(c, origin, v.redirectUri, { code, state: v.state });
   });
 
-  const readBody = async (c: Context): Promise<Record<string, string>> => {
-    const ct = c.req.header('content-type') ?? '';
-    const raw = ct.includes('application/json') ? ((await c.req.json().catch(() => ({}))) as Record<string, unknown>) : ((await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>);
-    return Object.fromEntries(Object.entries(raw ?? {}).filter(([, x]) => typeof x === 'string')) as Record<string, string>;
+  const readBody = async (c: Context): Promise<Record<string, string> | null> => {
+    const raw = await cappedBody(c);
+    return raw === null ? null : (Object.fromEntries(Object.entries(raw).filter(([, x]) => typeof x === 'string')) as Record<string, string>);
   };
 
+  /** Client authentication by the method the app registered with; a confidential client must use that method. */
   const authClient = (c: Context, body: Record<string, string>): ClientRow | null => {
     let id = body.client_id ?? '', secret = body.client_secret ?? '';
     const basic = /^Basic\s+(.+)$/i.exec(c.req.header('authorization') ?? '');
@@ -377,12 +449,15 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     const client = clientById(id);
     if (!client) return null;
     if (client.auth_method === 'none') return client;
+    if (client.auth_method === 'client_secret_basic' && !basic) return null;
+    if (client.auth_method === 'client_secret_post' && basic) return null;
     if (!secret || !client.secret_hash || !safeEqual(sha256(secret), client.secret_hash)) return null;
     return client;
   };
 
   const tokenError = (c: Context, error: string, description: string, status: 400 | 401 = 400) => {
     c.header('cache-control', 'no-store');
+    if (status === 401 && /^Basic\s/i.test(c.req.header('authorization') ?? '')) c.header('www-authenticate', 'Basic realm="savemybudget-toolkit"');
     return c.json({ error, error_description: description }, status);
   };
 
@@ -392,6 +467,7 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     c.header('cache-control', 'no-store');
     c.header('pragma', 'no-cache');
     const body = await readBody(c);
+    if (body === null) return tooLarge(c);
     const client = authClient(c, body);
     if (!client) return tokenError(c, 'invalid_client', 'Unknown client or bad credentials.', 401);
     const d = db();
@@ -400,15 +476,23 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     const fp = tokenFingerprint()!;
 
     if (body.grant_type === 'authorization_code') {
-      const code = d.prepare('UPDATE oauth_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL RETURNING client_id, redirect_uri, code_challenge, token_fp, expires_at')
-        .get(iso(nowMs), sha256(body.code ?? '')) as { client_id: string; redirect_uri: string; code_challenge: string; token_fp: string; expires_at: string } | undefined;
-      if (!code || code.client_id !== client.id) return tokenError(c, 'invalid_grant', 'The code is invalid, expired or already used.');
+      const codeHash = sha256(body.code ?? '');
+      const family = randomUUID();
+      const code = d.prepare('UPDATE oauth_codes SET used_at = ?, family = ? WHERE code_hash = ? AND used_at IS NULL RETURNING client_id, redirect_uri, code_challenge, token_fp, expires_at')
+        .get(iso(nowMs), family, codeHash) as { client_id: string; redirect_uri: string; code_challenge: string; token_fp: string; expires_at: string } | undefined;
+      if (!code) {
+        // A code used twice was probably intercepted: end whatever the first use signed in (RFC 6749 §4.1.2).
+        const used = d.prepare('SELECT family FROM oauth_codes WHERE code_hash = ? AND used_at IS NOT NULL').get(codeHash) as { family: string | null } | undefined;
+        if (used?.family) revokeFamily(used.family);
+        return tokenError(c, 'invalid_grant', 'The code is invalid, expired or already used.');
+      }
+      if (code.client_id !== client.id) return tokenError(c, 'invalid_grant', 'The code is invalid, expired or already used.');
       if (Date.parse(code.expires_at) <= nowMs) return tokenError(c, 'invalid_grant', 'The code has expired.');
       if (code.token_fp !== fp) return tokenError(c, 'invalid_grant', 'The toolkit token changed since this code was issued. Connect again.');
       if (body.redirect_uri && body.redirect_uri !== code.redirect_uri) return tokenError(c, 'invalid_grant', "redirect_uri doesn't match.");
       if (!body.code_verifier || !/^[A-Za-z0-9._~-]{43,128}$/.test(body.code_verifier) || !safeEqual(pkceS256(body.code_verifier), code.code_challenge)) return tokenError(c, 'invalid_grant', 'PKCE verification failed.');
       if (body.resource && !resourceOk(origin, body.resource)) return tokenError(c, 'invalid_target', 'Unknown resource.');
-      return c.json(issueTokens(client.id, randomUUID(), fp, nowMs));
+      return c.json(issueTokens(client.id, family, fp, nowMs));
     }
 
     if (body.grant_type === 'refresh_token') {
@@ -418,7 +502,6 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
       if (t.used_at) { revokeFamily(t.family); return tokenError(c, 'invalid_grant', 'The refresh token was already used, so this sign-in has been ended for safety. Connect again.'); }
       if (Date.parse(t.expires_at) <= nowMs) return tokenError(c, 'invalid_grant', 'The refresh token has expired. Connect again.');
       if (t.token_fp !== fp) return tokenError(c, 'invalid_grant', 'The toolkit token changed since this assistant signed in. Connect again.');
-      if (body.scope && body.scope.split(/\s+/).some((s) => s && s !== SCOPE && s !== 'offline_access')) return tokenError(c, 'invalid_scope', "Can't widen scope on refresh.");
       const claimed = d.prepare('UPDATE oauth_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL').run(iso(nowMs), sha256(body.refresh_token ?? ''));
       if (Number(claimed.changes) === 0) { revokeFamily(t.family); return tokenError(c, 'invalid_grant', 'The refresh token was already used.'); }
       d.prepare("UPDATE oauth_tokens SET revoked_at = ? WHERE family = ? AND kind = 'access' AND revoked_at IS NULL").run(iso(nowMs), t.family);
@@ -431,6 +514,7 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
   app.post('/oauth/revoke', async (c) => {
     if (!available()) return off(c);
     const body = await readBody(c);
+    if (body === null) return tooLarge(c);
     const client = authClient(c, body);
     if (!client) return tokenError(c, 'invalid_client', 'Unknown client or bad credentials.', 401);
     const r = db().prepare('SELECT family FROM oauth_tokens WHERE token_hash = ? AND client_id = ?').get(sha256(body.token ?? ''), client.id) as { family: string } | undefined;

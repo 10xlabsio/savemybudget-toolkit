@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
-import { isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 import { domainToASCII } from 'node:url';
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
@@ -12,10 +12,6 @@ import type { Site } from '../types.js';
 
 const BODY_CAP = 64 * 1024;
 const RATE_LIMIT = 120; // requests per minute per client (per /64 for IPv6)
-/** With SMB_TRUST_PROXY=1: requests per minute from one connecting address — the proxy itself, normally. A backstop
- *  against a client that reaches the port directly and rotates X-Forwarded-For; generous, because behind Caddy
- *  every visitor arrives on this one address. */
-const CONNECTION_LIMIT = 6000;
 const RATE_WINDOW_MS = 60_000;
 const TS_SKEW_MS = 3600_000;
 
@@ -125,7 +121,37 @@ function stripMapped(ip: string): string {
   return ip.toLowerCase().startsWith('::ffff:') && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
 }
 
-/** The TCP peer — never taken from headers. Rate limiting keys on this. */
+const PRIVATE_RANGES: [string, number, 'ipv4' | 'ipv6'][] = [
+  ['127.0.0.0', 8, 'ipv4'], ['10.0.0.0', 8, 'ipv4'], ['172.16.0.0', 12, 'ipv4'], ['192.168.0.0', 16, 'ipv4'], ['100.64.0.0', 10, 'ipv4'], ['169.254.0.0', 16, 'ipv4'],
+  ['::1', 128, 'ipv6'], ['fc00::', 7, 'ipv6'], ['fe80::', 10, 'ipv6'],
+];
+
+/**
+ * Which connecting addresses may speak for the visitor through X-Forwarded-For. SMB_TRUSTED_PROXIES is a
+ * comma-separated list of addresses and CIDR ranges, or "private" (the default: loopback and private ranges,
+ * which is where Caddy sits in the shipped Compose file).
+ */
+function buildTrusted(spec: string): BlockList {
+  const list = new BlockList();
+  for (const raw of spec.split(',').map((s) => s.trim()).filter(Boolean)) {
+    if (raw === 'private') { for (const [a, n, t] of PRIVATE_RANGES) list.addSubnet(a, n, t); continue; }
+    const [addr, bits] = raw.split('/');
+    const t = isIP(addr);
+    if (!t) continue;
+    if (bits === undefined) list.addAddress(addr, t === 4 ? 'ipv4' : 'ipv6');
+    else list.addSubnet(addr, Number(bits), t === 4 ? 'ipv4' : 'ipv6');
+  }
+  return list;
+}
+let trusted = buildTrusted(config.trustedProxies);
+let trustedSpec = config.trustedProxies;
+export function isTrustedProxy(ip: string): boolean {
+  if (trustedSpec !== config.trustedProxies) { trusted = buildTrusted(config.trustedProxies); trustedSpec = config.trustedProxies; }
+  const t = isIP(ip);
+  return t !== 0 && trusted.check(ip, t === 4 ? 'ipv4' : 'ipv6');
+}
+
+/** The TCP peer — never taken from headers. */
 export function socketIp(c: { env?: unknown }): string {
   const env = c.env as Partial<HttpBindings> | undefined;
   const ip = env?.incoming?.socket?.remoteAddress;
@@ -133,19 +159,24 @@ export function socketIp(c: { env?: unknown }): string {
 }
 
 /**
- * The visitor IP to record. With SMB_TRUST_PROXY=1 the proxy in front (Caddy, nginx) APPENDS the address it
- * saw to X-Forwarded-For, so the trustworthy hop is the RIGHTMOST valid address; anything to the left of it was
- * supplied by the client and can say whatever it likes. Without a proxy, the socket address is the visitor.
+ * The visitor IP to record and rate-limit on. With SMB_TRUST_PROXY=1, and only when the connection comes from a
+ * trusted proxy address (SMB_TRUSTED_PROXIES), the proxy in front (Caddy, nginx) APPENDS the address it saw to
+ * X-Forwarded-For, so the trustworthy hop is the RIGHTMOST one; anything to the left of it was supplied by the
+ * client and can say whatever it likes. If that hop isn't an address (a proxy that appends "unknown" or ip:port),
+ * the socket address is used rather than a client-written hop. Anyone else — including a client that reaches the
+ * port directly while SMB_TRUST_PROXY=1 — is keyed and recorded on its own connecting address.
  */
 export function clientIp(c: { req: { header(n: string): string | undefined }; env?: unknown }): string {
-  if (config.trustProxy) {
+  const socket = socketIp(c);
+  if (config.trustProxy && isTrustedProxy(socket)) {
     const xff = c.req.header('x-forwarded-for');
     if (xff) {
-      const hops = xff.split(',').map((h) => stripMapped(h.trim())).filter((h) => isIP(h) !== 0);
-      if (hops.length) return hops[hops.length - 1];
+      const hops = xff.split(',').map((h) => stripMapped(h.trim())).filter((h) => h !== '');
+      const last = hops[hops.length - 1];
+      if (last && isIP(last) !== 0) return last;
     }
   }
-  return socketIp(c);
+  return socket;
 }
 
 /**
@@ -171,30 +202,19 @@ export function originAllowed(site: Pick<Site, 'host'>, originHeader: string | u
 // ---------- rate limit ----------
 
 let rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
-let connectionLimited = makeRateLimiter(CONNECTION_LIMIT, RATE_WINDOW_MS);
 
 /** For tests. */
-export function resetRateLimit(o: { perConnection?: number } = {}) {
-  rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
-  connectionLimited = makeRateLimiter(o.perConnection ?? CONNECTION_LIMIT, RATE_WINDOW_MS);
-}
+export function resetRateLimit() { rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS); }
 
 /** IPv6 clients are keyed by their /64: one device or home usually holds the whole range. */
 export const clientKey = (ip: string) => (isIP(ip) === 6 ? subnet24(ip) : ip);
 
 /**
- * Per visitor, not per proxy. Without SMB_TRUST_PROXY the connecting address is the visitor. With it, the
- * connecting address is the proxy, so the 120/min bucket is keyed on the hop the proxy appended (clientIp), and a
- * much larger per-connection backstop caps anyone who reaches the port directly and makes up X-Forwarded-For.
- * (Keyed only on the connection, a busy site behind Caddy shared one 120/min bucket — and a distributed click
- * burst, the thing worth recording, was dropped.)
+ * Per visitor, not per proxy: keyed on clientIp(), which believes X-Forwarded-For only from a trusted proxy.
+ * (Keyed on the connection, a busy site behind Caddy shared one 120/min bucket — and a distributed click burst,
+ * the thing worth recording, was dropped.)
  */
-function beaconLimited(c: { req: { header(n: string): string | undefined }; env?: unknown }): boolean {
-  const socket = socketIp(c);
-  if (!config.trustProxy) return rateLimited(clientKey(socket));
-  if (connectionLimited(socket)) return true;
-  return rateLimited(clientKey(clientIp(c)));
-}
+const beaconLimited = (c: { req: { header(n: string): string | undefined }; env?: unknown }) => rateLimited(clientKey(clientIp(c)));
 
 // ---------- event handling ----------
 

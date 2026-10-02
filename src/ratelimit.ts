@@ -2,13 +2,17 @@
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Fixed-window-per-key request limiter, in memory. The collector and the MCP endpoint each own one. */
 
-export type RateLimiter = (key: string, at?: number) => boolean;
+export type RateLimiter = ((key: string, at?: number) => boolean) & {
+  /** True if `key` is already at the limit, without recording a request. */
+  peek(key: string, at?: number): boolean;
+};
 
-/** Returns `limited(key)`: true once `key` has made `limit` requests within the last `windowMs`. */
+/** Returns `limited(key)`: records a request and is true once `key` has made `limit` requests within the last `windowMs`. */
 export function makeRateLimiter(limit: number, windowMs: number): RateLimiter {
   const hits = new Map<string, number[]>();
   let lastSweep = 0;
-  return function limited(key: string, at = Date.now()): boolean {
+  const peek = (key: string, at = Date.now()) => (hits.get(key) ?? []).filter((t) => at - t < windowMs).length >= limit;
+  return Object.assign(function limited(key: string, at = Date.now()): boolean {
     if (at - lastSweep > windowMs) {
       for (const [k, v] of hits) {
         const kept = v.filter((t) => at - t < windowMs);
@@ -21,5 +25,5 @@ export function makeRateLimiter(limit: number, windowMs: number): RateLimiter {
     arr.push(at);
     hits.set(key, arr);
     return false;
-  };
+  }, { peek });
 }

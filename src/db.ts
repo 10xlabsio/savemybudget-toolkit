@@ -19,6 +19,9 @@ export function db(): DatabaseSync {
   return _db;
 }
 
+/** For tests: run the migrations on a given database. */
+export function migrateForTest(d: DatabaseSync): void { migrate(d); }
+
 /** For tests: open an in-memory database. */
 export function openMemoryDb(): DatabaseSync {
   _db = new DatabaseSync(':memory:');
@@ -136,7 +139,8 @@ function migrate(d: DatabaseSync) {
     resource TEXT,
     token_fp TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    used_at TEXT
+    used_at TEXT,
+    family TEXT
   );
   CREATE TABLE IF NOT EXISTS oauth_tokens (
     token_hash TEXT PRIMARY KEY,
@@ -152,6 +156,13 @@ function migrate(d: DatabaseSync) {
   );
   CREATE INDEX IF NOT EXISTS ix_oauth_tokens_family ON oauth_tokens(family);
   `);
+  // Columns added after a table first shipped: CREATE TABLE IF NOT EXISTS leaves an existing table as it was.
+  addColumnIfMissing(d, 'oauth_codes', 'family', 'TEXT');
+}
+
+function addColumnIfMissing(d: DatabaseSync, table: string, column: string, type: string) {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 // ---------- helpers ----------

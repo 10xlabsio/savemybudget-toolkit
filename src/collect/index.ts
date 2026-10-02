@@ -7,11 +7,15 @@ import type { HttpBindings } from '@hono/node-server';
 import { makeRateLimiter } from '../ratelimit.js';
 import { config } from '../config.js';
 import { bumpCounter, db, getSiteByKey, insertEvent, updateSessionUnload, type NewEvent } from '../db.js';
-import { enrichIp, parseUa } from '../enrich/index.js';
+import { enrichIp, parseUa, subnet24 } from '../enrich/index.js';
 import type { Site } from '../types.js';
 
 const BODY_CAP = 64 * 1024;
-const RATE_LIMIT = 120; // requests per minute per IP
+const RATE_LIMIT = 120; // requests per minute per client (per /64 for IPv6)
+/** With SMB_TRUST_PROXY=1: requests per minute from one connecting address — the proxy itself, normally. A backstop
+ *  against a client that reaches the port directly and rotates X-Forwarded-For; generous, because behind Caddy
+ *  every visitor arrives on this one address. */
+const CONNECTION_LIMIT = 6000;
 const RATE_WINDOW_MS = 60_000;
 const TS_SKEW_MS = 3600_000;
 
@@ -167,9 +171,30 @@ export function originAllowed(site: Pick<Site, 'host'>, originHeader: string | u
 // ---------- rate limit ----------
 
 let rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
+let connectionLimited = makeRateLimiter(CONNECTION_LIMIT, RATE_WINDOW_MS);
 
 /** For tests. */
-export function resetRateLimit() { rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS); }
+export function resetRateLimit(o: { perConnection?: number } = {}) {
+  rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
+  connectionLimited = makeRateLimiter(o.perConnection ?? CONNECTION_LIMIT, RATE_WINDOW_MS);
+}
+
+/** IPv6 clients are keyed by their /64: one device or home usually holds the whole range. */
+export const clientKey = (ip: string) => (isIP(ip) === 6 ? subnet24(ip) : ip);
+
+/**
+ * Per visitor, not per proxy. Without SMB_TRUST_PROXY the connecting address is the visitor. With it, the
+ * connecting address is the proxy, so the 120/min bucket is keyed on the hop the proxy appended (clientIp), and a
+ * much larger per-connection backstop caps anyone who reaches the port directly and makes up X-Forwarded-For.
+ * (Keyed only on the connection, a busy site behind Caddy shared one 120/min bucket — and a distributed click
+ * burst, the thing worth recording, was dropped.)
+ */
+function beaconLimited(c: { req: { header(n: string): string | undefined }; env?: unknown }): boolean {
+  const socket = socketIp(c);
+  if (!config.trustProxy) return rateLimited(clientKey(socket));
+  if (connectionLimited(socket)) return true;
+  return rateLimited(clientKey(clientIp(c)));
+}
 
 // ---------- event handling ----------
 
@@ -290,8 +315,7 @@ collectApp.use('*', async (c, next) => {
 collectApp.options('*', (c) => c.body(null, 204));
 
 collectApp.post('/v1/beacon', async (c) => {
-  // Rate limit on the TCP peer: X-Forwarded-For is client-supplied and must not be able to reset the bucket.
-  if (rateLimited(socketIp(c))) { bumpCounter('collect_ratelimited'); return c.body(null, 204); }
+  if (beaconLimited(c)) { bumpCounter('collect_ratelimited'); return c.body(null, 204); }
   const ip = clientIp(c);
 
   const len = Number(c.req.header('content-length') ?? '0');

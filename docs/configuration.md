@@ -9,7 +9,7 @@ All settings are environment variables, read at start. Values you change in the 
 | `SMB_PORT` | `8080` | Port the process listens on. |
 | `SMB_BIND` | `127.0.0.1` | Interface to bind. Compose sets `0.0.0.0` inside the container network; Caddy exposes only `/collect`, `/sdk` and `/mcp`. |
 | `SMB_DATA_DIR` | `/data` | SQLite file, uploads, packages. Mount a volume here. |
-| `SMB_TRUST_PROXY` | `0` | Set `1` when behind Caddy or another proxy so the visitor IP is taken from `X-Forwarded-For` — the **last** hop, the one your proxy appended; anything a client wrote before it is ignored. The collector's rate limit always uses the connecting address; the `/mcp` limit uses this client address. Only set it when a proxy you control is the only thing that can reach the port. Compose sets it. |
+| `SMB_TRUST_PROXY` | `0` | Set `1` when behind Caddy or another proxy so the visitor IP is taken from `X-Forwarded-For` — the **last** hop, the one your proxy appended; anything a client wrote before it is ignored. Rate limits are per visitor: 120 a minute keyed on this client address (IPv6 by /64), plus a 6,000-a-minute cap per connecting address in case something reaches the port directly and makes up the header. Only set it when a proxy you control is the only thing that can reach the port. Compose sets it. |
 | `SMB_RETENTION_DAYS` | `90` | Days to keep click records. Minimum 60. |
 | `SMB_MAX_UPLOAD_MB` | `100` | Upload size cap, uncompressed. |
 | `SMB_STORE_WARN_MB` | `2048` | Show a notice when the data directory exceeds this. |

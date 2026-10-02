@@ -6,8 +6,9 @@
  * cookies, no CSRF, no setup redirect.
  *
  * Off until a token exists (Settings → AI assistants, or SMB_MCP_TOKEN): until then every /mcp request is a
- * plain 404. With a token: Authorization: Bearer <token> on every request, 120 requests a minute per client
- * address (failed sign-ins included), bodies up to 1 MiB, batches up to 50 messages.
+ * plain 404. With a token: Authorization: Bearer <token> on every request; 120 messages a minute per client
+ * (each message in a batch counts), failed sign-ins limited separately so a scanner can't lock the operator
+ * out; bodies up to 1 MiB, batches up to 50 messages. IPv6 clients are keyed by their /64.
  */
 import { Hono, type Context } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
@@ -16,6 +17,8 @@ import { bumpCounter } from '../db.js';
 import { clientIp } from '../collect/index.js';
 import { log } from '../jobs/index.js';
 import { makeRateLimiter } from '../ratelimit.js';
+import { subnet24 } from '../enrich/index.js';
+import { isIP } from 'node:net';
 import { readBodyCapped } from '../ui.js';
 import { argumentError } from './schema.js';
 import { mcpEnabled, tokenMatches } from './token.js';
@@ -37,8 +40,13 @@ const BODY_CAP = 1024 * 1024;
 const MAX_BATCH = 50;
 
 let limited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
-/** For tests: a fresh limiter, optionally with another limit. */
-export function resetMcpRateLimit(limit = RATE_LIMIT): void { limited = makeRateLimiter(limit, RATE_WINDOW_MS); }
+let failedSignIns = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
+/** For tests: fresh limiters, optionally with another limit. */
+export function resetMcpRateLimit(limit = RATE_LIMIT): void { limited = makeRateLimiter(limit, RATE_WINDOW_MS); failedSignIns = makeRateLimiter(limit, RATE_WINDOW_MS); }
+
+/** The client address (the hop your proxy appended, with SMB_TRUST_PROXY=1); IPv6 by /64, since one host often holds the whole range. */
+const clientKey = (c: Parameters<typeof clientIp>[0]) => { const ip = clientIp(c); return isIP(ip) === 6 ? subnet24(ip) : ip; };
+const tooMany = (c: Context) => { c.header('retry-after', String(RATE_WINDOW_MS / 1000)); return c.json({ error: 'rate_limited', error_description: `At most ${RATE_LIMIT} messages a minute.` }, 429); };
 
 type Id = string | number | null;
 interface Rpc { jsonrpc?: unknown; id?: Id; method?: unknown; params?: unknown }
@@ -60,6 +68,7 @@ export const mcpApp = new Hono<{ Bindings: HttpBindings }>();
 
 mcpApp.use('*', async (c, next) => {
   await next();
+  if (!mcpEnabled()) return; // off: a bare 404, nothing that marks the route as special
   for (const [k, v] of Object.entries(CORS)) c.res.headers.set(k, v);
   c.res.headers.set('cache-control', 'no-store');
   c.res.headers.set('x-content-type-options', 'nosniff');
@@ -77,16 +86,15 @@ mcpApp.on(['GET', 'DELETE'], '/', (c) => {
 
 mcpApp.post('/', async (c) => {
   if (!mcpEnabled()) return notFound(c);
-  if (limited(clientIp(c))) {
-    c.header('retry-after', String(RATE_WINDOW_MS / 1000));
-    return c.json({ error: 'rate_limited', error_description: `At most ${RATE_LIMIT} requests a minute.` }, 429);
-  }
+  const key = clientKey(c);
   const m = /^Bearer\s+(\S+)$/i.exec(c.req.header('authorization') ?? '');
   if (!m || !tokenMatches(m[1])) {
+    if (failedSignIns(key)) return tooMany(c);
     bumpCounter('mcp_unauthorized');
     c.header('www-authenticate', 'Bearer realm="savemybudget-toolkit"');
     return c.json({ error: 'unauthorized' }, 401);
   }
+  if (limited(key)) return tooMany(c);
 
   const raw = await readBodyCapped(c.req.raw, BODY_CAP);
   if (raw === null) return c.json(error(null, -32600, 'Request body too large (1 MiB at most).'), 413);
@@ -96,14 +104,20 @@ mcpApp.post('/', async (c) => {
   const batch = Array.isArray(body);
   const messages = (batch ? body : [body]) as unknown[];
   if (messages.length === 0 || messages.length > MAX_BATCH) return c.json(error(null, -32600, `Invalid Request: send 1–${MAX_BATCH} messages.`), 400);
+  // The first message was counted above; every further one in a batch counts too.
+  for (let i = 1; i < messages.length; i++) if (limited(key)) return tooMany(c);
 
   const out: unknown[] = [];
   for (const m of messages) {
-    const msg = (m && typeof m === 'object' ? m : {}) as Rpc;
-    const id: Id = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : null;
-    if (msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') { out.push(error(id, -32600, 'Invalid Request')); continue; }
-    const r = await handle(msg.method, (msg.params && typeof msg.params === 'object' ? msg.params : {}) as Record<string, unknown>, id);
-    if (msg.id !== undefined && r) out.push(r);
+    const msg = (m && typeof m === 'object' && !Array.isArray(m) ? m : {}) as Rpc;
+    const hasId = Object.hasOwn(msg, 'id');
+    const idOk = !hasId || msg.id === null || typeof msg.id === 'string' || typeof msg.id === 'number';
+    const id: Id = idOk && hasId ? (msg.id as Id) : null;
+    if (!idOk || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') { out.push(error(id, -32600, 'Invalid Request')); continue; }
+    // A notification (no id) gets no answer, so it never runs a tool: a tool call is only worth doing when someone reads the result.
+    if (!hasId && msg.method === 'tools/call') continue;
+    const r = await handle(msg.method, (msg.params && typeof msg.params === 'object' ? msg.params : {}) as Record<string, unknown>, id, hasId);
+    if (hasId && r) out.push(r);
   }
   if (!out.length) return c.body(null, 202);
   return c.json(batch ? out : out[0]);
@@ -111,7 +125,7 @@ mcpApp.post('/', async (c) => {
 
 mcpApp.all('*', notFound);
 
-async function handle(method: string, params: Record<string, unknown>, id: Id): Promise<unknown> {
+async function handle(method: string, params: Record<string, unknown>, id: Id, hasId: boolean): Promise<unknown> {
   switch (method) {
     case 'initialize': {
       const asked = typeof params.protocolVersion === 'string' ? params.protocolVersion : '';
@@ -153,7 +167,7 @@ async function handle(method: string, params: Record<string, unknown>, id: Id): 
     case 'resources/list':
       return result(id, { resources: [] });
     default:
-      return id === null ? null : error(id, -32601, `Method not found: ${method.slice(0, 60)}`);
+      return hasId ? error(id, -32601, `Method not found: ${method.slice(0, 60)}`) : null;
   }
 }
 

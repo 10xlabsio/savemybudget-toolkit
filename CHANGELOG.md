@@ -2,11 +2,11 @@
 
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] — unreleased
 
 ### Added
 - **AI assistants (MCP).** `/mcp` serves Claude Code, Claude Desktop, Cursor and other MCP clients over Streamable HTTP: 13 tools (sites and tag health, summaries, flagged clicks, breakdowns, repeat offenders, IP history, CRM lead matching, saved analyses, claim window, notices, rules, run analysis, build claim package) and 3 prompts (audit CRM leads, weekly summary, prepare a claim). Off until a token is created in Settings → AI assistants or set as `SMB_MCP_TOKEN`. See [docs/ai-assistants.md](docs/ai-assistants.md).
-- Caddyfile forwards `/mcp*`. Existing installs: add the block to reach it from another machine.
+- Caddyfile forwards `/mcp` (an `@mcp` path matcher). Existing installs: add the block to reach it from another machine.
 - Settings counters `mcp_calls` and `mcp_unauthorized`; the daily heartbeat reports whether MCP is on and the call count.
 
 ### Fixed

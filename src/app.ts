@@ -11,7 +11,7 @@ import { db, getCounter, getSetting, getSite, listSites, setSetting } from './db
 import { collectApp } from './collect/index.js';
 import { api } from './api/index.js';
 import { mcpApp } from './mcp/index.js';
-import { takeFlashToken, tokenSource } from './mcp/token.js';
+import { MIN_ENV_TOKEN_LENGTH, envTokenTooShort, takeFlashToken, tokenSource } from './mcp/token.js';
 import { activeNotifications, retentionDays, silentThresholdHours, storeSizeMb, log } from './jobs/index.js';
 import { loadAnalysis } from './rules/index.js';
 import { checkWindow } from './claim/index.js';
@@ -310,10 +310,10 @@ app.get('/settings', (c) => page(c, SettingsPage({
   bind: `${config.bind}:${config.port}`,
   mcp: {
     source: tokenSource(),
-    token: takeFlashToken(),
+    token: c.req.method === 'GET' ? takeFlashToken() : null, // a HEAD must not use up the one showing
     publicEndpoint: publicUrl() ? `${publicUrl().replace(/\/+$/, '')}/mcp` : null,
     localEndpoint: `http://127.0.0.1:${config.port}/mcp`,
-    notice: ({ off: 'AI assistant access turned off. The old token no longer works.', env: 'The token is set by SMB_MCP_TOKEN in the environment; change it there.' } as Record<string, string>)[c.req.query('mcp') ?? ''] ?? null,
+    notice: envTokenTooShort() ? `SMB_MCP_TOKEN is set but shorter than ${MIN_ENV_TOKEN_LENGTH} characters, so it is ignored. Use a long random value, e.g. openssl rand -base64 32.` : ({ off: 'AI assistant access turned off. The old token no longer works.', env: 'The token is set by SMB_MCP_TOKEN in the environment; change it there.' } as Record<string, string>)[c.req.query('mcp') ?? ''] ?? null,
   },
   counters: [
     { key: 'collect_unknown_key', value: getCounter('collect_unknown_key'), what: 'Beacons that named a site key this instance does not have — usually an old snippet or a copy-paste slip.' },

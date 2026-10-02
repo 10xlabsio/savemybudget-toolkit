@@ -12,7 +12,7 @@ It reads what the toolkit's own UI shows and can save an analysis or build a cla
 
 Until a token exists, `/mcp` answers 404 as if it didn't exist.
 
-To manage the token as configuration instead, set `SMB_MCP_TOKEN` in `.env` and restart; it takes precedence and the Settings buttons are hidden. Use a long random value, for example `openssl rand -base64 32`.
+To manage the token as configuration instead, set `SMB_MCP_TOKEN` in `.env` and restart; it takes precedence and the Settings buttons are hidden. It must be at least 24 characters (shorter values are ignored, and Settings says so) — use a long random value, for example `openssl rand -base64 32`.
 
 ## Connect
 
@@ -74,7 +74,7 @@ Custom connectors added on claude.ai sign in with OAuth, which the toolkit doesn
 | `get_flag_breakdown` | Flagged / watch / total by country, network, subnet, browser, source, campaign, landing path, hour, weekday or rule |
 | `get_top_offenders` | IPs, networks or /24s with the most flagged clicks — the IP exclusion list |
 | `get_ip_profile` | One IP's last 90 days on a site |
-| `match_leads` | CRM leads matched to clicks by click id, then IP within 30 minutes, with each lead's verdict |
+| `match_leads` | CRM leads matched to clicks by click id, then IP within 30 minutes of the submission (clicks before it first; a matching `utm_*`, then the latest), with each lead's verdict |
 | `get_analyses` | Saved analyses and their claim packages |
 | `get_claim_window` | Whether a window can still be claimed (Google's ~60-day limit) |
 | `get_notifications` | Open notices: silent tag, first beacon, clicks about to leave the claim window, proxy misconfigured |
@@ -94,7 +94,7 @@ The assistant sees what the UI shows, including full visitor IPs, so treat the t
 
 ## Limits
 
-120 requests a minute per client address (failed sign-ins count), 1 MiB per request, 50 messages per batch, 200 leads per `match_leads` call. Analyses are computed on request and reused for up to 60 seconds; imports, deletions and site edits take effect immediately.
+120 messages a minute per client (each message in a batch counts; IPv6 clients by /64), with failed sign-ins limited separately so someone guessing can't lock you out; 1 MiB per request, 50 messages per batch, 200 leads per `match_leads` call. Analyses are computed on request and reused for up to 60 seconds; imports, deletions and site edits take effect immediately. `run_analysis` returns an analysis saved in the last 24 hours only if the data still gives the same counts.
 
 ## Troubleshooting
 
@@ -102,5 +102,5 @@ The assistant sees what the UI shows, including full visitor IPs, so treat the t
 |---|---|
 | `404` | Not turned on: create a token in Settings, or set `SMB_MCP_TOKEN` |
 | `401` | Missing or wrong token. The Settings counter `mcp_unauthorized` counts these |
-| `429` | Over 120 requests a minute from one address; wait a minute |
-| The client can't reach the URL | Check the Caddyfile has the `/mcp*` block (added in 1.1.0) and reload Caddy |
+| `429` | Over 120 messages a minute from one client; wait a minute |
+| The client can't reach the URL | Check the Caddyfile has the `@mcp` block (added in 1.1.0) and reload Caddy |

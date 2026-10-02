@@ -3,19 +3,26 @@
 /**
  * The bearer token that guards /mcp. One per instance.
  * - SMB_MCP_TOKEN in the environment wins; the Settings buttons are hidden then.
- * - Otherwise Settings → AI assistants creates one. Only its SHA-256 is stored; the plain token is kept in a
- *   one-shot "flash" setting just long enough for the next Settings page view to show it once.
+ * - Otherwise Settings → AI assistants creates one. Only its SHA-256 is stored; the plain token is held in
+ *   process memory for up to 10 minutes, just long enough for the next Settings page view to show it once.
+ * - An SMB_MCP_TOKEN shorter than 24 characters is ignored (and Settings says why): /mcp is public.
  * No token → the endpoint answers 404, as if it didn't exist.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { db, getSetting, setSetting } from '../db.js';
 
 const HASH_KEY = 'mcp_token_sha256';
-const FLASH_KEY = 'mcp_token_flash';
 const FLASH_MAX_AGE_MS = 10 * 60_000;
+export const MIN_ENV_TOKEN_LENGTH = 24;
+
+let flash: { token: string; at: number } | null = null;
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest();
-const envToken = () => (process.env.SMB_MCP_TOKEN ?? '').trim();
+const rawEnvToken = () => (process.env.SMB_MCP_TOKEN ?? '').trim();
+const envToken = () => { const t = rawEnvToken(); return t.length >= MIN_ENV_TOKEN_LENGTH ? t : ''; };
+
+/** Set but too short to be used — shown on the Settings page. */
+export const envTokenTooShort = () => { const t = rawEnvToken(); return t.length > 0 && t.length < MIN_ENV_TOKEN_LENGTH; };
 
 export type TokenSource = 'env' | 'settings' | null;
 
@@ -39,22 +46,18 @@ export function tokenMatches(presented: string): boolean {
 export function issueToken(nowMs = Date.now()): string {
   const token = 'smbt_' + randomBytes(32).toString('base64url');
   setSetting(HASH_KEY, sha256(token).toString('hex'));
-  setSetting(FLASH_KEY, JSON.stringify({ token, at: nowMs }));
+  flash = { token, at: nowMs };
   return token;
 }
 
 export function revokeToken(): void {
-  db().prepare('DELETE FROM settings WHERE key IN (?, ?)').run(HASH_KEY, FLASH_KEY);
+  db().prepare('DELETE FROM settings WHERE key = ?').run(HASH_KEY);
+  flash = null;
 }
 
 /** The plain token, once: returns it if it was issued in the last 10 minutes, and forgets it either way. */
 export function takeFlashToken(nowMs = Date.now()): string | null {
-  const raw = getSetting(FLASH_KEY);
-  if (!raw) return null;
-  db().prepare('DELETE FROM settings WHERE key = ?').run(FLASH_KEY);
-  try {
-    const f = JSON.parse(raw) as { token?: unknown; at?: unknown };
-    if (typeof f.token === 'string' && typeof f.at === 'number' && nowMs - f.at <= FLASH_MAX_AGE_MS) return f.token;
-  } catch { /* corrupt: drop it */ }
-  return null;
+  const f = flash;
+  flash = null;
+  return f && nowMs - f.at <= FLASH_MAX_AGE_MS ? f.token : null;
 }

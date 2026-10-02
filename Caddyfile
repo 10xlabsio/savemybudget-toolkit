@@ -8,7 +8,8 @@ t.example.com {
     handle /sdk/* {
         reverse_proxy toolkit:8080
     }
-    handle /mcp* {
+    @mcp path /mcp /mcp/*
+    handle @mcp {
         reverse_proxy toolkit:8080
     }
     handle {

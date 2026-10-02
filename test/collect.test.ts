@@ -177,18 +177,49 @@ describe('collect', () => {
     assert.equal(row(siteId, 'xff-4')[0].ip, '203.0.113.78');
   });
 
-  it('H1: the rate limit is keyed on the socket address, so a rotating X-Forwarded-For cannot reset it', async () => {
+  it('behind a proxy, visitors get their own bucket: a distributed burst through one proxy address is recorded', async () => {
     const { config } = await import('../src/config.js');
     const was = config.trustProxy;
     config.trustProxy = true;
     resetRateLimit();
     try {
       const b = getCounter('collect_ratelimited');
-      for (let i = 0; i < 120; i++) await post('/v1/beacon', base('load', 'k-collect', 'rlx-' + i), '198.51.100.9', { 'x-forwarded-for': `1.1.${i >> 8}.${i & 255}` });
+      for (let i = 0; i < 130; i++) await post('/v1/beacon', base('load', 'k-collect', 'burst-' + i), '172.18.0.3', { 'x-forwarded-for': `81.2.${i >> 8}.${(i & 255) + 1}` });
+      assert.equal(getCounter('collect_ratelimited'), b, 'no visitor sent more than 120');
+      assert.equal(row(siteId, 'burst-129').length, 1);
+      // one visitor over 120 through the proxy is still limited
+      for (let i = 0; i < 120; i++) await post('/v1/beacon', base('load', 'k-collect', 'one-' + i), '172.18.0.3', { 'x-forwarded-for': '81.3.0.1' });
+      await post('/v1/beacon', base('load', 'k-collect', 'one-over'), '172.18.0.3', { 'x-forwarded-for': '9.9.9.9, 81.3.0.1' });
+      assert.equal(getCounter('collect_ratelimited'), b + 1, 'a client-written left hop does not open a new bucket');
+      assert.equal(row(siteId, 'one-over').length, 0);
+    } finally { config.trustProxy = was; resetRateLimit(); }
+  });
+
+  it('H1: a direct client rotating X-Forwarded-For is capped by the per-connection backstop', async () => {
+    const { config } = await import('../src/config.js');
+    const was = config.trustProxy;
+    config.trustProxy = true;
+    resetRateLimit({ perConnection: 150 });
+    try {
+      const b = getCounter('collect_ratelimited');
+      for (let i = 0; i < 150; i++) await post('/v1/beacon', base('load', 'k-collect', 'rlx-' + i), '198.51.100.9', { 'x-forwarded-for': `1.1.${i >> 8}.${i & 255}` });
       await post('/v1/beacon', base('load', 'k-collect', 'rlx-over'), '198.51.100.9', { 'x-forwarded-for': '2.2.2.2' });
       assert.equal(getCounter('collect_ratelimited'), b + 1);
       assert.equal(row(siteId, 'rlx-over').length, 0);
     } finally { config.trustProxy = was; resetRateLimit(); }
+  });
+
+  it('IPv6 visitors are limited per /64', async () => {
+    resetRateLimit();
+    const b = getCounter('collect_ratelimited');
+    const post6 = (body: unknown, ip: string) => collectApp.fetch(new Request('http://localhost/v1/beacon', {
+      method: 'POST', headers: { 'content-type': 'text/plain', 'user-agent': UA }, body: JSON.stringify(body),
+    }), { incoming: { socket: { remoteAddress: ip } } } as any);
+    for (let i = 0; i < 120; i++) await post6(base('load', 'k-collect', 'v6-' + i), `2001:db8:77::${(i + 1).toString(16)}`);
+    await post6(base('load', 'k-collect', 'v6-over'), '2001:db8:77::ffff');
+    assert.equal(row(siteId, 'v6-0').length, 1, 'IPv6 beacons are stored');
+    assert.equal(getCounter('collect_ratelimited'), b + 1);
+    resetRateLimit();
   });
 
   it('H2: a beacon whose Origin is another site is dropped and counted; the site host, its subdomains and no Origin are accepted', async () => {

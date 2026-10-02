@@ -14,11 +14,9 @@ import { Hono, type Context } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
 import { config } from '../config.js';
 import { bumpCounter } from '../db.js';
-import { clientIp } from '../collect/index.js';
+import { clientIp, clientKey as keyOf } from '../collect/index.js';
 import { log } from '../jobs/index.js';
 import { makeRateLimiter } from '../ratelimit.js';
-import { subnet24 } from '../enrich/index.js';
-import { isIP } from 'node:net';
 import { readBodyCapped } from '../ui.js';
 import { argumentError } from './schema.js';
 import { mcpEnabled, tokenMatches } from './token.js';
@@ -45,7 +43,7 @@ let failedSignIns = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
 export function resetMcpRateLimit(limit = RATE_LIMIT): void { limited = makeRateLimiter(limit, RATE_WINDOW_MS); failedSignIns = makeRateLimiter(limit, RATE_WINDOW_MS); }
 
 /** The client address (the hop your proxy appended, with SMB_TRUST_PROXY=1); IPv6 by /64, since one host often holds the whole range. */
-const clientKey = (c: Parameters<typeof clientIp>[0]) => { const ip = clientIp(c); return isIP(ip) === 6 ? subnet24(ip) : ip; };
+const clientKey = (c: Parameters<typeof clientIp>[0]) => keyOf(clientIp(c));
 const tooMany = (c: Context) => { c.header('retry-after', String(RATE_WINDOW_MS / 1000)); return c.json({ error: 'rate_limited', error_description: `At most ${RATE_LIMIT} messages a minute.` }, 429); };
 
 type Id = string | number | null;

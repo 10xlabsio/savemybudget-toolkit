@@ -10,6 +10,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Settings counters `mcp_calls` and `mcp_unauthorized`; the daily heartbeat reports whether MCP is on and the call count.
 
 ### Fixed
+- Collector rate limit behind a proxy: with `SMB_TRUST_PROXY=1` the 120-a-minute limit is now per visitor (the hop the proxy appended; IPv6 per /64) instead of per connection. Behind Caddy every beacon arrives from Caddy's address, so the whole instance shared one 120-a-minute bucket and a busy site — or a distributed click burst — lost beacons as `collect_ratelimited`. A 6,000-a-minute cap per connecting address remains for clients that reach the port directly.
 - IPv6 /64 grouping (subnet clustering, top ranges) expands compressed addresses first, so `2001:db8::1` and `2001:db8:0:0::2` land in the same range.
 
 ## [1.0.0] — 2026-09-29

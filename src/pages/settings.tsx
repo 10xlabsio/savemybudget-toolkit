@@ -10,6 +10,7 @@ export interface SettingsProps {
   publicUrl: string; tz: string; retentionDays: number; storeMb: number; silentHours: number;
   telemetryOn: boolean; telemetryEnv: boolean; updateCheckOn: boolean; updateCheckEnv: boolean;
   bind: string; counters: { key: string; value: number; what: string }[];
+  mcp: { source: 'env' | 'settings' | null; token: string | null; publicEndpoint: string | null; localEndpoint: string; notice: string | null };
   saved?: boolean;
   error?: string | null;
 }
@@ -17,7 +18,9 @@ export interface SettingsProps {
 const THRESHOLDS: [number, string][] = [[12, '12 hours'], [24, '1 day'], [48, '2 days'], [72, '3 days'], [168, '7 days']];
 
 export function SettingsPage(p: SettingsProps) {
-  const js = `document.querySelectorAll('form[data-confirm]').forEach(function(f){f.addEventListener('submit',function(e){if(!confirm(f.getAttribute('data-confirm')))e.preventDefault()})});`;
+  const js = `document.querySelectorAll('form[data-confirm]').forEach(function(f){f.addEventListener('submit',function(e){if(!confirm(f.getAttribute('data-confirm')))e.preventDefault()})});
+document.querySelectorAll('[data-copy]').forEach(function(b){b.addEventListener('click',function(){var el=document.getElementById(b.getAttribute('data-copy'));if(!el)return;var t=el.textContent||'';var done=function(){var o=b.textContent;b.textContent='Copied';setTimeout(function(){b.textContent=o},1500)};
+if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,function(){})}})});`;
   return (
     <Layout title="Settings" nonce={p.nonce} sites={p.sites} notifications={p.notifications} section="settings">
       <h1>Settings</h1>
@@ -69,6 +72,8 @@ export function SettingsPage(p: SettingsProps) {
         <p><button type="submit" class="btn pri">Save settings</button></p>
       </form>
 
+      <McpCard {...p.mcp} csrf={p.csrf} />
+
       <div class="card">
         <h2>Access</h2>
         <p>The UI is bound to <code>{p.bind}</code>. With the shipped Compose file it stays on the host's loopback; reach it over an SSH tunnel. If you must expose it, put a password in front — see <a href="/docs/configuration#exposing-the-ui">Configuration → Exposing the UI</a>.</p>
@@ -111,5 +116,57 @@ export function SettingsPage(p: SettingsProps) {
       </div>
       <script nonce={p.nonce} dangerouslySetInnerHTML={{ __html: js }} />
     </Layout>
+  );
+}
+
+function McpCard(m: SettingsProps['mcp'] & { csrf: string }) {
+  const endpoint = m.publicEndpoint ?? m.localEndpoint;
+  const tok = m.token ?? '<your token>';
+  const claudeCode = `claude mcp add --transport http savemybudget ${endpoint} --header "Authorization: Bearer ${tok}"`;
+  const cursor = JSON.stringify({ mcpServers: { savemybudget: { url: endpoint, headers: { Authorization: `Bearer ${tok}` } } } }, null, 2);
+  const desktop = JSON.stringify({ mcpServers: { savemybudget: { command: 'npx', args: ['-y', 'mcp-remote', endpoint, '--header', 'Authorization:${AUTH_HEADER}'], env: { AUTH_HEADER: `Bearer ${tok}` } } } }, null, 2);
+  return (
+    <div class="card" id="ai-assistants">
+      <h2>AI assistants</h2>
+      <p>Let Claude Code, Claude Desktop, Cursor or another MCP client read this toolkit's sites, flagged clicks and rules, check CRM leads against clicks, and prepare claim packages. Nothing it does changes anything in Google Ads, and nothing is filed for you.</p>
+      {m.notice ? <div class="note amber"><div>{m.notice}</div></div> : null}
+      {m.source === null ? (
+        <>
+          <p><b>Turned off.</b> <code>/mcp</code> answers 404 until you create a token.</p>
+          <form method="post" action="/api/mcp/enable"><Csrf token={m.csrf} /><button type="submit" class="btn pri">Turn on and create a token</button></form>
+        </>
+      ) : (
+        <>
+          <p><b>Turned on</b> — {m.source === 'env' ? <>token set by <code>SMB_MCP_TOKEN</code> in the environment.</> : 'token created here.'} The token gives an assistant everything this page's UI shows; keep it secret.</p>
+          {m.token ? (
+            <div class="note green"><div>
+              <p><b>Your token — copy it now, it won't be shown again.</b></p>
+              <div class="copybox"><pre><code id="mcp-token">{m.token}</code></pre><button type="button" class="btn sm" data-copy="mcp-token">Copy</button></div>
+            </div></div>
+          ) : null}
+          {m.source === 'settings' ? (
+            <div>
+              <form method="post" action="/api/mcp/rotate" style="display:inline" data-confirm="Create a new token? Assistants using the old one stop working until you update them."><Csrf token={m.csrf} /><button type="submit" class="btn sm">New token</button></form>{' '}
+              <form method="post" action="/api/mcp/disable" style="display:inline" data-confirm="Turn off AI assistant access? The token stops working and /mcp answers 404."><Csrf token={m.csrf} /><button type="submit" class="btn sm danger">Turn off</button></form>
+            </div>
+          ) : <p class="hint">To change or remove it, edit <code>SMB_MCP_TOKEN</code> and restart.</p>}
+        </>
+      )}
+      <h3 style="margin-top:14px">Server URL</h3>
+      <p><code class="brk">{endpoint}</code></p>
+      <p class="hint">{m.publicEndpoint ? <>The shipped Caddyfile forwards <code>/mcp</code> on your tag subdomain. On this machine you can also use <code>{m.localEndpoint}</code>.</> : <>Set the public URL above to reach it from other machines; the shipped Caddyfile forwards <code>/mcp</code>.</>}</p>
+      <h3 style="margin-top:14px">Connect</h3>
+      <details class="sw"><summary>Claude Code</summary>
+        <div class="copybox"><pre><code id="mcp-cc">{claudeCode}</code></pre><button type="button" class="btn sm" data-copy="mcp-cc">Copy</button></div>
+      </details>
+      <details class="sw"><summary>Cursor (~/.cursor/mcp.json)</summary>
+        <div class="copybox"><pre><code id="mcp-cursor">{cursor}</code></pre><button type="button" class="btn sm" data-copy="mcp-cursor">Copy</button></div>
+      </details>
+      <details class="sw"><summary>Claude Desktop (claude_desktop_config.json, through mcp-remote)</summary>
+        <div class="copybox"><pre><code id="mcp-desktop">{desktop}</code></pre><button type="button" class="btn sm" data-copy="mcp-desktop">Copy</button></div>
+        <p class="hint">Needs Node.js on that computer. Custom connectors added in claude.ai can't send a fixed token on most plans, so Claude Desktop connects through this small local bridge.</p>
+      </details>
+      <p class="hint" style="margin-top:10px">What it can do, and every tool: <a href="/docs/ai-assistants">AI assistants</a>.</p>
+    </div>
   );
 }

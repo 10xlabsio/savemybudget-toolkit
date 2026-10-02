@@ -125,6 +125,17 @@ function migrate(d: DatabaseSync) {
 
 export const now = () => new Date().toISOString();
 
+// ---------- data generation (lets callers cache analyses) ----------
+
+let generation = 0;
+/**
+ * A counter bumped on every bulk change to what an analysis reads: imports, deletions, site edits (targeting
+ * changes rule 3). Single beacons don't bump it — they arrive constantly on a live site, so caches keyed on it
+ * also carry a short TTL.
+ */
+export function dataGeneration(): number { return generation; }
+export function bumpDataGeneration(): void { generation++; }
+
 export function getSetting(key: string): string | null {
   const r = db().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
   return r ? r.value : null;
@@ -163,15 +174,18 @@ export function createSite(s: { name: string; host: string; key: string; consent
 export function updateSite(id: number, s: { name: string; host: string; consent_mode: string; target_countries: string[] }) {
   db().prepare('UPDATE sites SET name=?, host=?, consent_mode=?, target_countries=? WHERE id=?')
     .run(s.name, s.host, s.consent_mode, JSON.stringify(s.target_countries), id);
+  bumpDataGeneration();
 }
 export function deleteSiteData(id: number) {
   db().prepare('DELETE FROM events WHERE site_id = ?').run(id);
   db().prepare('DELETE FROM uploads WHERE site_id = ?').run(id);
   db().prepare('DELETE FROM analyses WHERE site_id = ?').run(id);
   db().prepare('UPDATE sites SET first_event_at = NULL, last_seen_at = NULL WHERE id = ?').run(id);
+  bumpDataGeneration();
 }
 export function deleteSite(id: number) {
   db().prepare('DELETE FROM sites WHERE id = ?').run(id);
+  bumpDataGeneration();
 }
 
 export type NewEvent = Omit<ClickEvent, 'id'>;
@@ -197,6 +211,7 @@ export function insertEvents(events: NewEvent[]): number {
     d.exec('ROLLBACK');
     throw err;
   }
+  bumpDataGeneration();
   return events.length;
 }
 
@@ -219,6 +234,16 @@ export function eventsInWindow(siteId: number, from: string, to: string, sources
   }
   sql += ' ORDER BY ts';
   return (db().prepare(sql).all(...params) as any[]).map(rowToEvent);
+}
+
+/** Every non-test event on a site carrying this stored click id (gclid, or `gbraid:…` / `wbraid:…`). Uses ix_events_site_gclid. */
+export function eventsByClickId(siteId: number, stored: string): ClickEvent[] {
+  return (db().prepare('SELECT * FROM events WHERE site_id = ? AND gclid = ? AND is_test = 0 ORDER BY ts').all(siteId, stored) as any[]).map(rowToEvent);
+}
+
+/** Non-test events on a site from one IP between two ISO instants, inclusive. Uses ix_events_site_ip. */
+export function eventsByIp(siteId: number, ip: string, fromIso: string, toIso: string): ClickEvent[] {
+  return (db().prepare('SELECT * FROM events WHERE site_id = ? AND ip = ? AND ts >= ? AND ts <= ? AND is_test = 0 ORDER BY ts').all(siteId, ip, fromIso, toIso) as any[]).map(rowToEvent);
 }
 
 export function eventById(id: number): ClickEvent | null {

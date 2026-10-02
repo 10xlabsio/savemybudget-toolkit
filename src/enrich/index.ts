@@ -102,9 +102,25 @@ export function isPrivateIp(ip: string): boolean {
   return false;
 }
 
+/** The /24 for IPv4, the /64 for IPv6. IPv6 is expanded first, so `2001:db8::1` and `2001:db8:0:0::2` share a key. */
 export function subnet24(ip: string): string {
   if (isIP(ip) === 4) return ip.split('.').slice(0, 3).join('.') + '.0/24';
-  return ip.split(':').slice(0, 4).join(':') + '::/64';
+  return ipv6Groups(ip).slice(0, 4).join(':') + '::/64';
+}
+
+/** Eight lower-case hex groups without leading zeros; handles `::` and an embedded IPv4 tail. */
+function ipv6Groups(ip: string): string[] {
+  let v = ip.toLowerCase().split('%')[0];
+  if (v.includes('.')) {
+    const at = v.lastIndexOf(':');
+    const o = v.slice(at + 1).split('.').map(Number);
+    v = v.slice(0, at + 1) + ((o[0] << 8) | o[1]).toString(16) + ':' + ((o[2] << 8) | o[3]).toString(16);
+  }
+  const halves = v.split('::');
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length > 1 && halves[1] ? halves[1].split(':') : [];
+  const groups = halves.length > 1 ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right] : left;
+  return groups.map((g) => (parseInt(g || '0', 16) || 0).toString(16));
 }
 
 // ---------- user agent ----------

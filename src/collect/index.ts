@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import { domainToASCII } from 'node:url';
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
+import { makeRateLimiter } from '../ratelimit.js';
 import { config } from '../config.js';
 import { bumpCounter, db, getSiteByKey, insertEvent, updateSessionUnload, type NewEvent } from '../db.js';
 import { enrichIp, parseUa } from '../enrich/index.js';
@@ -165,26 +166,10 @@ export function originAllowed(site: Pick<Site, 'host'>, originHeader: string | u
 
 // ---------- rate limit ----------
 
-const hits = new Map<string, number[]>();
-let lastSweep = 0;
-
-function rateLimited(ip: string, at = Date.now()): boolean {
-  if (at - lastSweep > RATE_WINDOW_MS) {
-    for (const [k, v] of hits) {
-      const kept = v.filter((t) => at - t < RATE_WINDOW_MS);
-      if (kept.length) hits.set(k, kept); else hits.delete(k);
-    }
-    lastSweep = at;
-  }
-  const arr = (hits.get(ip) ?? []).filter((t) => at - t < RATE_WINDOW_MS);
-  if (arr.length >= RATE_LIMIT) { hits.set(ip, arr); return true; }
-  arr.push(at);
-  hits.set(ip, arr);
-  return false;
-}
+let rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS);
 
 /** For tests. */
-export function resetRateLimit() { hits.clear(); lastSweep = 0; }
+export function resetRateLimit() { rateLimited = makeRateLimiter(RATE_LIMIT, RATE_WINDOW_MS); }
 
 // ---------- event handling ----------
 

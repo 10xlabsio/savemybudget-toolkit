@@ -2,9 +2,10 @@
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { db, listSites, getSetting, now, getCounter } from '../db.js';
+import { bumpDataGeneration, db, listSites, getSetting, now, getCounter } from '../db.js';
 import { config } from '../config.js';
 import * as telemetry from '../telemetry/index.js';
+import { mcpEnabled } from '../mcp/token.js';
 
 // ---------- notifications ----------
 
@@ -89,7 +90,7 @@ export function hourlyTick(nowDate = new Date()) {
 
   // Retention purge
   const cutoff = new Date(nowDate.getTime() - retentionDays() * 86400e3).toISOString();
-  d.prepare('DELETE FROM events WHERE ts < ?').run(cutoff);
+  if (Number(d.prepare('DELETE FROM events WHERE ts < ?').run(cutoff).changes) > 0) bumpDataGeneration();
 
   // Staged uploads nobody imported
   sweepStagedUploads(nowDate.getTime());
@@ -167,6 +168,8 @@ export async function dailyTick(nowDate = new Date()) {
       store_size: telemetry.mbBucket(storeSizeMb()),
       uptime_hours: Math.round(process.uptime() / 3600),
       sdk_errors: getCounter('sdk_errors'),
+      mcp_enabled: mcpEnabled(),
+      mcp_calls: getCounter('mcp_calls'),
     });
     telemetry.markHeartbeat();
   }

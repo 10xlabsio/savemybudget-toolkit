@@ -8,13 +8,14 @@ import { isIP } from 'node:net';
 import { basename, join } from 'node:path';
 import { Hono } from 'hono';
 import { config } from '../config.js';
-import { createSite, db, deleteSite, deleteSiteData, getSite, listSites, setSetting, siteStatus, updateSite } from '../db.js';
+import { bumpDataGeneration, createSite, db, deleteSite, deleteSiteData, getSite, listSites, setSetting, siteStatus, updateSite } from '../db.js';
 import { analyzeUpload, importUpload } from '../ingest/index.js';
 import { checkWindow, buildPackage } from '../claim/index.js';
 import { writeZip, type ZipEntry } from '../claim/zip.js';
 import { runAnalysis, saveAnalysis, loadAnalysis } from '../rules/index.js';
 import { dismissNotification, retentionDays, clearNotifications, log } from '../jobs/index.js';
 import * as telemetry from '../telemetry/index.js';
+import { issueToken, revokeToken, tokenSource } from '../mcp/token.js';
 import { COUNTRY_CODES, bytes, makeSiteKey, parseBufferedForm, validateHost, type AppEnv } from '../ui.js';
 
 export const api = new Hono<AppEnv>();
@@ -221,6 +222,22 @@ export function safeNext(next: string): string | null {
   return next;
 }
 
+// ---------- AI assistants (MCP) ----------
+
+/** Create or replace the /mcp token. The plain token is shown once on the next Settings view, never put in a URL. */
+function mcpTokenRoute(c: { redirect(location: string, status: 303): Response }) {
+  if (tokenSource() === 'env') return c.redirect('/settings?mcp=env#ai-assistants', 303);
+  issueToken();
+  return c.redirect('/settings?mcp=new#ai-assistants', 303);
+}
+api.post('/mcp/enable', (c) => mcpTokenRoute(c));
+api.post('/mcp/rotate', (c) => mcpTokenRoute(c));
+api.post('/mcp/disable', (c) => {
+  if (tokenSource() === 'env') return c.redirect('/settings?mcp=env#ai-assistants', 303);
+  revokeToken();
+  return c.redirect('/settings?mcp=off#ai-assistants', 303);
+});
+
 // ---------- uploads ----------
 
 const uploadsDir = () => { const d = join(config.dataDir, 'uploads'); mkdirSync(d, { recursive: true }); return d; };
@@ -315,6 +332,7 @@ api.post('/sites/:id/uploads/:token/import', async (c) => {
 
 function deleteUpload(id: number): boolean {
   const r = db().prepare('DELETE FROM uploads WHERE id = ?').run(id);
+  bumpDataGeneration();
   return Number(r.changes) > 0;
 }
 api.delete('/uploads/:id', (c) => {

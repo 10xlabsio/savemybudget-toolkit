@@ -10,6 +10,8 @@ import { config } from './config.js';
 import { db, getCounter, getSetting, getSite, listSites, setSetting } from './db.js';
 import { collectApp } from './collect/index.js';
 import { api } from './api/index.js';
+import { mcpApp } from './mcp/index.js';
+import { takeFlashToken, tokenSource } from './mcp/token.js';
 import { activeNotifications, retentionDays, silentThresholdHours, storeSizeMb, log } from './jobs/index.js';
 import { loadAnalysis } from './rules/index.js';
 import { checkWindow } from './claim/index.js';
@@ -54,6 +56,8 @@ app.get('/healthz', (c) => c.json({ ok: true, version: config.version }));
 // The collector answers at /v1/beacon, /v1/sdk-error, /healthz — and the same under /collect (what the Caddyfile proxies).
 app.mount('/collect', collectApp.fetch);
 app.mount('/v1', collectApp.fetch, { replaceRequest: (r) => r });
+// MCP for AI assistants: bearer-token auth of its own, so it sits outside the UI middleware too (404 until enabled).
+app.mount('/mcp', mcpApp.fetch);
 
 // ---------- UI middleware ----------
 
@@ -304,12 +308,21 @@ app.get('/settings', (c) => page(c, SettingsPage({
   publicUrl: publicUrl(), tz: tz(), retentionDays: retentionDays(), storeMb: storeSizeMb(), silentHours: silentThresholdHours(),
   telemetryOn: telemetry.enabled(), telemetryEnv: config.telemetry, updateCheckOn: config.updateCheck && getSetting('update_check') !== 'off', updateCheckEnv: config.updateCheck,
   bind: `${config.bind}:${config.port}`,
+  mcp: {
+    source: tokenSource(),
+    token: takeFlashToken(),
+    publicEndpoint: publicUrl() ? `${publicUrl().replace(/\/+$/, '')}/mcp` : null,
+    localEndpoint: `http://127.0.0.1:${config.port}/mcp`,
+    notice: ({ off: 'AI assistant access turned off. The old token no longer works.', env: 'The token is set by SMB_MCP_TOKEN in the environment; change it there.' } as Record<string, string>)[c.req.query('mcp') ?? ''] ?? null,
+  },
   counters: [
     { key: 'collect_unknown_key', value: getCounter('collect_unknown_key'), what: 'Beacons that named a site key this instance does not have — usually an old snippet or a copy-paste slip.' },
     { key: 'collect_invalid', value: getCounter('collect_invalid'), what: 'Beacons that did not match the payload shape and were dropped.' },
     { key: 'collect_bad_origin', value: getCounter('collect_bad_origin'), what: 'Beacons whose browser Origin was not the site\'s host (or a subdomain of it) and were dropped. A few can come from a staging copy of the site or a proxy that rewrites the host; a steady stream means someone is posting beacons from another site. Same-origin beacons that carry no Origin header are accepted.' },
     { key: 'collect_ratelimited', value: getCounter('collect_ratelimited'), what: 'Beacons dropped because one address sent more than 120 in a minute.' },
     { key: 'sdk_errors', value: getCounter('sdk_errors'), what: 'Times the SDK reported an internal error from a visitor\'s browser.' },
+    { key: 'mcp_calls', value: getCounter('mcp_calls'), what: 'Tool calls answered for AI assistants over /mcp.' },
+    { key: 'mcp_unauthorized', value: getCounter('mcp_unauthorized'), what: 'Requests to /mcp with a missing or wrong token. A steady stream means someone is guessing — rotate the token.' },
   ],
   saved: c.req.query('saved') === '1',
   error: c.req.query('error') === 'url' ? 'The public URL was not saved: it must start with http:// or https:// and name a host, for example https://t.yourbrand.com.' : null,

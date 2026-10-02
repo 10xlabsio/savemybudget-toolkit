@@ -22,6 +22,7 @@ import { argumentError } from './schema.js';
 import { mcpEnabled, tokenMatches } from './token.js';
 import { TOOLS, TOOL_BY_NAME, ToolError, resolveSite, specialiseArgumentError } from './tools.js';
 import { PROMPTS, PROMPT_BY_NAME } from './prompts.js';
+import { mountOAuth, oauthOrigin, resourceMetadataUrl, verifyAccessToken } from './oauth.js';
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 export const SERVER_INFO = { name: 'savemybudget-toolkit', title: 'SaveMyBudget Toolkit', version: config.version };
@@ -57,8 +58,9 @@ function toolResult(data: unknown, isError = false) {
 
 const CORS: Record<string, string> = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'POST, OPTIONS',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': 'authorization, content-type, mcp-protocol-version, mcp-session-id',
+  'access-control-expose-headers': 'www-authenticate',
   'access-control-max-age': '86400',
 };
 
@@ -86,11 +88,14 @@ mcpApp.post('/', async (c) => {
   if (!mcpEnabled()) return notFound(c);
   const key = clientKey(c);
   const m = /^Bearer\s+(\S+)$/i.exec(c.req.header('authorization') ?? '');
-  if (!m || !tokenMatches(m[1])) {
+  // The instance token itself (Claude Code, Cursor, scripts) or a token an assistant got by signing in (claude.ai).
+  if (!m || !(tokenMatches(m[1]) || verifyAccessToken(m[1]))) {
     if (failedSignIns(key)) return tooMany(c);
     bumpCounter('mcp_unauthorized');
-    c.header('www-authenticate', 'Bearer realm="savemybudget-toolkit"');
-    return c.json({ error: 'unauthorized' }, 401);
+    // The resource_metadata pointer is what starts sign-in in clients that can't send a fixed token.
+    const origin = oauthOrigin();
+    c.header('www-authenticate', `Bearer realm="savemybudget-toolkit"${m ? ', error="invalid_token"' : ''}${origin ? `, resource_metadata="${resourceMetadataUrl(origin)}"` : ''}`);
+    return c.json({ error: 'unauthorized', error_description: 'Send the toolkit token as a Bearer token, or sign in (see /docs/ai-assistants).' }, 401);
   }
   if (limited(key)) return tooMany(c);
 
@@ -120,6 +125,8 @@ mcpApp.post('/', async (c) => {
   if (!out.length) return c.body(null, 202);
   return c.json(batch ? out : out[0]);
 });
+
+mountOAuth(mcpApp);
 
 mcpApp.all('*', notFound);
 

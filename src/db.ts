@@ -118,6 +118,39 @@ function migrate(d: DatabaseSync) {
     first_beacon_reported INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0);
+  -- OAuth sign-in for AI assistants (src/mcp/oauth.tsx). Only SHA-256 hashes of codes, tokens and secrets.
+  CREATE TABLE IF NOT EXISTS oauth_clients (
+    id TEXT PRIMARY KEY,
+    secret_hash TEXT,
+    auth_method TEXT NOT NULL DEFAULT 'none',
+    name TEXT NOT NULL,
+    redirect_uris TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS oauth_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    resource TEXT,
+    token_fp TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS oauth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+    client_id TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+    family TEXT NOT NULL,
+    token_fp TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    revoked_at TEXT,
+    last_used_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS ix_oauth_tokens_family ON oauth_tokens(family);
   `);
 }
 

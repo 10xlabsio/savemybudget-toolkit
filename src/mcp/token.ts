@@ -33,6 +33,17 @@ export function tokenSource(): TokenSource {
 
 export const mcpEnabled = () => tokenSource() !== null;
 
+/**
+ * Identifies the current instance token without revealing it. Every OAuth code and token records it; when the
+ * token is rotated, turned off or replaced in the environment, the fingerprint changes and every assistant
+ * signed in under the old one is signed out.
+ */
+export function tokenFingerprint(): string | null {
+  const env = envToken();
+  const hash = env ? sha256(env).toString('hex') : getSetting(HASH_KEY);
+  return hash ? createHash('sha256').update(`fp:${hash}`).digest('hex').slice(0, 24) : null;
+}
+
 /** Constant-time check of a presented bearer token against the env token or the stored hash. */
 export function tokenMatches(presented: string): boolean {
   if (!presented) return false;

@@ -8,6 +8,8 @@ services:
       SMB_TRUST_PROXY: "1"
       # Uncomment to disable anonymous usage counts (see TELEMETRY.md):
       # SMB_TELEMETRY: "off"
+      # Token for AI assistants at /mcp — or turn it on in Settings → AI assistants (see docs/ai-assistants.md):
+      # SMB_MCP_TOKEN: "a long random value"
     volumes:
       - smb-data:/data
     ports:

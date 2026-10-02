@@ -38,3 +38,6 @@ They're conservative defaults documented in [Rules](rules.md). The managed versi
 
 **What's the difference from the managed version?**
 The managed version at [savemybudget.io](https://savemybudget.io/?utm_source=toolkit) installs and monitors the tag for you, connects to Google Ads for cost data and campaign attribution, runs more rules including cross-account signals, and prepares and files the claims. It's no-win-no-fee: when Google confirms a credit, they keep 25 %; if Google confirms nothing, there is no charge. The toolkit is for people who'd rather run the collection themselves and file their own claims.
+
+**Can I use it from Claude, Cursor or another AI assistant?**
+Yes. Turn on Settings → AI assistants, copy the token, and connect the assistant to `https://<your tag subdomain>/mcp`. It can answer questions about your sites and flagged clicks, match CRM leads against clicks, and prepare a claim package — it never files anything or touches Google Ads. Steps for Claude Code, Cursor and Claude Desktop: [AI assistants](ai-assistants.md).

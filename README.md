@@ -16,6 +16,7 @@ SaveMyBudget extends Google's own invalid-traffic protection; it does not replac
 - **Ten detection rules** with documented defaults. [Read them](docs/rules.md).
 - **The claim package** — `evidence.csv`, a plain-language summary, and a field-by-field guide to Google's form.
 - **A small web UI** — add sites, install the tag with a live "first data arrived" check, upload logs, run an analysis, download the package.
+- **An MCP server for AI assistants** — ask Claude Code, Claude Desktop or Cursor about your flagged clicks, check CRM leads against them, and prepare a claim package. Off until you create a token. [How to connect](docs/ai-assistants.md).
 
 ## Quick start
 
@@ -49,6 +50,7 @@ visitor clicks ad → lands on your site → tag posts a beacon → https://t.ex
 | [Inputs](docs/inputs.md) | Beacons, server logs, CSV — formats and validation |
 | [Rules](docs/rules.md) | The ten rules, their defaults, and known false positives |
 | [Filing a claim](docs/filing-a-claim.md) | What Google asks for, where it is in the package, what weakens a request |
+| [AI assistants](docs/ai-assistants.md) | Connect Claude, Cursor or another MCP client; the tools and what they return |
 | [Privacy](docs/privacy.md) | IP addresses are personal data; retention; consent modes |
 | [Configuration](docs/configuration.md) | Environment variables and settings |
 | [Telemetry](TELEMETRY.md) | What is sent, what never is, how to turn it off |

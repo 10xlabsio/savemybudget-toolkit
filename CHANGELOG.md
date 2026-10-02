@@ -4,6 +4,16 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Added
+- **AI assistants (MCP).** `/mcp` serves Claude Code, Claude Desktop, Cursor and other MCP clients over Streamable HTTP: 13 tools (sites and tag health, summaries, flagged clicks, breakdowns, repeat offenders, IP history, CRM lead matching, saved analyses, claim window, notices, rules, run analysis, build claim package) and 3 prompts (audit CRM leads, weekly summary, prepare a claim). Off until a token is created in Settings → AI assistants or set as `SMB_MCP_TOKEN`. See [docs/ai-assistants.md](docs/ai-assistants.md).
+- Caddyfile forwards `/mcp*`. Existing installs: add the block to reach it from another machine.
+- Settings counters `mcp_calls` and `mcp_unauthorized`; the daily heartbeat reports whether MCP is on and the call count.
+
+### Fixed
+- IPv6 /64 grouping (subnet clustering, top ranges) expands compressed addresses first, so `2001:db8::1` and `2001:db8:0:0::2` land in the same range.
+
+## [1.0.0] — 2026-09-29
+
 ### Security
 - Collector: with `SMB_TRUST_PROXY=1` the visitor IP is the last `X-Forwarded-For` hop (the one the proxy appended), not the first; the rate limit is keyed on the connecting address.
 - Collector: beacons whose browser `Origin`/`Referer` host is not the site's host (or a subdomain) are dropped and counted as `collect_bad_origin`. Threat model written up in SECURITY.md and the FAQ.

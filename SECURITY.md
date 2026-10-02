@@ -10,7 +10,11 @@ The latest minor release. Security fixes are released as patch versions and anno
 
 ## What the toolkit exposes
 
-The only routes meant to be public are `POST /collect`, `GET /collect/healthz` and `GET /sdk/*`. The shipped Compose file and Caddyfile expose nothing else. Findings about the UI being reachable are still welcome — someone will expose it — but the intended threat model is: an attacker on the internet can send beacons and fetch the SDK, nothing more.
+The only routes meant to be public are `POST /collect`, `GET /collect/healthz`, `GET /sdk/*` and `POST /mcp`. The shipped Compose file and Caddyfile expose nothing else. Findings about the UI being reachable are still welcome — someone will expose it — but the intended threat model is: an attacker on the internet can send beacons and fetch the SDK, and without the MCP token gets nothing else.
+
+## The MCP endpoint
+
+`/mcp` serves AI assistants (see [docs/ai-assistants.md](docs/ai-assistants.md)). It answers 404 until a token exists. The token is created in Settings (only its SHA-256 is stored; the plain value is shown once) or set as `SMB_MCP_TOKEN`, compared in constant time, accepted only in the `Authorization` header, and never logged. Requests are limited to 120 a minute per client address, failed sign-ins included, and counted under `mcp_unauthorized`. The token grants read access to everything the UI shows, including visitor IPs, plus saving an analysis and building a claim package; it can't change sites, settings, uploads or anything in Google Ads. The endpoint sits outside the UI's cookie and CSRF layer, so a browser session can't be used against it.
 
 ## Threat model for beacons
 
@@ -27,7 +31,7 @@ If you need stronger guarantees, cross-check beacons against your web server log
 ## What we consider in scope
 
 - Anything that lets a beacon or an upload execute code, read files, or reach other routes
-- Anything that lets a public request read or alter stored data
+- Anything that lets a public request read or alter stored data, including through `/mcp` without the token
 - Denial of service through the public routes beyond what rate limiting covers
 - The SDK sending anything to a host other than the configured collector
 - The telemetry module including data it shouldn't

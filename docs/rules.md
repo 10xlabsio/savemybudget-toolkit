@@ -12,6 +12,8 @@ Defaults live in `src/rules/defaults.json`. Changing them is a product decision,
 
 The visitor's IP belongs to a hosting provider's network (AWS, Google Cloud, Hetzner, OVH, DigitalOcean and others). Real customers don't browse from datacenters. The list is `data/hosting-asns.txt`; additions are welcome, with a source.
 
+Privacy-relay networks are never hosting: iCloud Private Relay sends ordinary Safari and iPhone visitors out through Cloudflare (AS13335), Akamai (AS36183) and Fastly (AS54113). These three are left out of the list, and the rule skips them even if one is added back or an older stored click was recorded as hosting.
+
 Needs: any source. False positives: corporate VPNs terminating in a cloud region; a few residential ISPs share address space with hosting arms. Keep the list to networks that are hosting-only.
 
 ### 3. Outside targeting — hard when targeting is set
@@ -37,6 +39,8 @@ Needs: beacons (full), log/CSV (user-agent only). False positives: rare; some ac
 ### 8. Fingerprint collision — soft
 
 The same browser fingerprint hash seen from five or more IPs within 24 hours. One machine cycling through addresses.
+
+WebKit browsers — everything on iPhone and iPad, and Safari on the Mac — expose so little to fingerprint that everyone with the same device model and OS version shares a hash. For those visitors the bar is 50 IPs (`webkit_min_ips`), so a popular iPhone model doesn't look like one machine.
 
 Needs: beacons. False positives: identical corporate builds behind different NAT exits; privacy browsers that deliberately flatten fingerprints. Convergence with a network or behaviour signal is required before this flags.
 
@@ -64,13 +68,15 @@ Needs: beacons. False positives: users who read a short page and leave; assistiv
 
 The same click ID hit the landing page two or more times, or arrived more than 24 hours after it was first seen. A click ID is minted once per real click; reuse means a URL is being replayed.
 
-Needs: any source. False positives: a visitor reloading the landing page or returning via browser history. The threshold is set so an ordinary reload is tolerated; repeated hits over hours are not.
+Repeated hits only count when they come from a second IP or device (fingerprint), or are spread over more than 10 minutes (`min_spread_min`). A burst of hits from one IP and one device within a few minutes is a visitor reloading the page, and is not flagged.
+
+Needs: any source. False positives: a visitor returning via browser history after more than 10 minutes, or reloading after their network changes address (Wi-Fi to mobile data). Repeated hits over hours are flagged.
 
 ## Frequency
 
 ### 14. IP velocity — soft
 
-Three or more paid clicks from one IP in 15 minutes, or five or more in 24 hours. Halved in weight when the IP shows five or more distinct browser families in the window, which is what carrier-grade NAT and office networks look like.
+Three or more paid clicks from one IP in 15 minutes, or five or more in 24 hours. A paid click is a distinct click ID: reloads of the same click, and a beacon with its matching log line, count once. Halved in weight when the IP shows five or more distinct browser families in the window, which is what carrier-grade NAT and office networks look like.
 
 Needs: any source. False positives: exactly those shared networks — hence the dampener and the convergence guard.
 

@@ -95,14 +95,14 @@ describe('rules', () => {
   });
 
   it('(i) iPhones on iCloud Private Relay networks are not hosting', () => {
-    for (const asn of [13335, 36183, 54113]) assert.equal(isHostingAsn(asn), false, `AS${asn}`);
+    for (const asn of [13335, 36183, 20940, 54113]) assert.equal(isHostingAsn(asn), false, `AS${asn}`);
     assert.equal(isHostingAsn(16509), true);
-    assert.equal(exp.relayIphone.gclids.length, 9);
+    assert.equal(exp.relayIphone.gclids.length, 12);
     for (const g of exp.relayIphone.gclids) for (const s of forGclid(g)) {
       assert.ok(!hasRule(s, 'r1_hosting_asn'), `relay gclid ${g} hit r1 (AS${s.event.asn}, is_hosting ${s.event.is_hosting})`);
       assert.notEqual(s.verdict, 'flag');
     }
-    assert.ok(exp.relayIphone.gclids.flatMap(forGclid).some((s) => s.event.is_hosting === 1), 'fixture includes a row stored as hosting');
+    assert.ok(exp.relayIphone.gclids.flatMap(forGclid).some((s) => s.event.asn === 20940 && s.event.is_hosting === 1), 'fixture includes an AS20940 row stored as hosting');
   });
 
   it('(j) one iPhone model\'s shared fingerprint is not a collision under 50 IPs', () => {

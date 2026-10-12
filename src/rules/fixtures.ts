@@ -65,6 +65,7 @@ const RELAY = [
   { asn: 13335, name: 'CLOUDFLARENET' },
   { asn: 36183, name: 'AKAMAI-AS' },
   { asn: 54113, name: 'FASTLY' },
+  { asn: 20940, name: 'AKAMAI-ASN1' },
 ];
 const CAMPAIGNS = ['Brand - Exact', 'Generic - Shoes', 'Competitor', null];
 
@@ -230,11 +231,11 @@ function build(siteId: number, opts: FixtureOpts = {}): { events: NewEvent[]; ca
     cases.geo.gclids.push(g); cases.geo.ips.push(ip);
   }
 
-  // iPhones on iCloud Private Relay: 9 ordinary visits, 3 per relay network. Fastly rows carry
-  // is_hosting = 1, as stored while Fastly was still on the hosting list.
-  for (let i = 0; i < 9; i++) {
+  // iPhones on iCloud Private Relay: 12 ordinary visits, 3 per relay network. Fastly and AS20940
+  // rows carry is_hosting = 1, as stored while those networks were still on the hosting list.
+  for (let i = 0; i < 12; i++) {
     const ip = freshIp(); const g = gclid(); const relay = RELAY[i % RELAY.length];
-    events.push(beaconVisit({ ts: iso(start + rnd() * span), ip, gclid: g, ua_family: 'safari-mobile', asn: relay.asn, asn_name: relay.name, is_hosting: relay.asn === 54113 ? 1 : 0 }));
+    events.push(beaconVisit({ ts: iso(start + rnd() * span), ip, gclid: g, ua_family: 'safari-mobile', asn: relay.asn, asn_name: relay.name, is_hosting: relay.asn === 54113 || relay.asn === 20940 ? 1 : 0 }));
     cases.relayIphone.gclids.push(g); cases.relayIphone.ips.push(ip);
   }
   // One iPhone model's fingerprint from 20 home connections over a day (2 of them Chrome on iOS).

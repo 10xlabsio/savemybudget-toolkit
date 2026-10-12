@@ -6,7 +6,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ### Fixed
 - Detection false positives on ordinary iPhone and Safari visitors:
-  - **Rule 1 (hosting network):** iCloud Private Relay networks — Cloudflare (AS13335), Akamai (AS36183) and Fastly (AS54113) — are no longer treated as hosting. Fastly is removed from `data/hosting-asns.txt`, and the rule skips all three even for clicks stored before this release, so re-running an analysis corrects older windows.
+  - **Rule 1 (hosting network):** iCloud Private Relay networks — Cloudflare (AS13335), Akamai (AS36183 and AS20940) and Fastly (AS54113) — are no longer treated as hosting. Fastly and Akamai AS20940 are removed from `data/hosting-asns.txt`, and the rule skips all four even for clicks stored before this release, so re-running an analysis corrects older windows.
   - **Rule 8 (fingerprint collision):** iPhone, iPad and Safari fingerprints are shared by everyone with the same device model, so those visitors need 50 IPs on one fingerprint (new `webkit_min_ips` default) instead of 5.
   - **Rule 13 (click ID replay):** repeated hits now need a second IP or device, or hits more than 10 minutes apart (new `min_spread_min` default). One visitor reloading the landing page is no longer flagged. A click ID seen again after 24 hours still is.
   - **Rule 14 (IP velocity):** counts distinct click IDs, so reloads, and a beacon with its matching log line, count as one paid click.

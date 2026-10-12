@@ -77,6 +77,7 @@ export function lookupAsn(ip: string): AsnInfo {
 export const PRIVACY_RELAY_ASNS: ReadonlySet<number> = new Set([
   13335, // Cloudflare
   36183, // Akamai (Private Relay)
+  20940, // Akamai (also Private Relay egress)
   54113, // Fastly
 ]);
 

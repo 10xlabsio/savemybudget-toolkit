@@ -1,6 +1,6 @@
 # Hosting / datacenter networks. One per line: ASN<TAB>operator. Lines starting with # are ignored.
 # Keep to networks that are hosting-only. Contributions: include a source link in the PR.
-# Privacy-relay networks (13335 Cloudflare, 36183 Akamai Private Relay, 54113 Fastly) carry
+# Privacy-relay networks (13335 Cloudflare, 36183 and 20940 Akamai, 54113 Fastly) carry
 # iCloud Private Relay users and are never treated as hosting, even if listed here.
 16509	Amazon AWS
 14618	Amazon AWS
@@ -28,7 +28,6 @@
 46606	Unified Layer / Bluehost
 26496	GoDaddy hosting
 19551	Incapsula
-20940	Akamai
 36351	SoftLayer / IBM Cloud
 55286	Server Mania
 25820	IT7 / Psychz

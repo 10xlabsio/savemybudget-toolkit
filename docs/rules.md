@@ -12,7 +12,7 @@ Defaults live in `src/rules/defaults.json`. Changing them is a product decision,
 
 The visitor's IP belongs to a hosting provider's network (AWS, Google Cloud, Hetzner, OVH, DigitalOcean and others). Real customers don't browse from datacenters. The list is `data/hosting-asns.txt`; additions are welcome, with a source.
 
-Privacy-relay networks are never hosting: iCloud Private Relay sends ordinary Safari and iPhone visitors out through Cloudflare (AS13335), Akamai (AS36183) and Fastly (AS54113). These three are left out of the list, and the rule skips them even if one is added back or an older stored click was recorded as hosting.
+Privacy-relay networks are never hosting: iCloud Private Relay sends ordinary Safari and iPhone visitors out through Cloudflare (AS13335), Akamai (AS36183 and AS20940) and Fastly (AS54113). These are left out of the list, and the rule skips them even if one is added back or an older stored click was recorded as hosting.
 
 Needs: any source. False positives: corporate VPNs terminating in a cloud region; a few residential ISPs share address space with hosting arms. Keep the list to networks that are hosting-only.
 

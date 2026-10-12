@@ -23,6 +23,9 @@ export interface FixtureCases {
   subnet: { subnet: string; ips: string[]; gclids: string[] };       // (g) r4
   cgnat: { ip: string; gclids: string[] };             // (h) must not flag
   geo: { gclids: string[]; ips: string[] };            // r3 (only when site targets GB)
+  relayIphone: { gclids: string[]; ips: string[] };    // must not flag: iPhones on iCloud Private Relay networks
+  iphoneCollision: { fp_hash: string; ips: string[]; gclids: string[] }; // must not flag: one iPhone model's shared fingerprint
+  reloadBurst: { ip: string; gclid: string };          // must not flag: one visitor reloading the landing page
 }
 
 // ---------- seeded PRNG (mulberry32) ----------
@@ -55,6 +58,15 @@ const UAS: Record<string, string> = {
   'samsung-mobile': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.0 Chrome/121.0.0.0 Mobile Safari/537.36',
 };
 const UA_FAMILIES = Object.keys(UAS);
+/** Chrome on iOS: WebKit underneath, and not one of the families above. */
+const UA_CHROME_IOS = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/129.0.6668.69 Mobile/15E148 Safari/604.1';
+/** iCloud Private Relay egress networks (relay, not hosting). */
+const RELAY = [
+  { asn: 13335, name: 'CLOUDFLARENET' },
+  { asn: 36183, name: 'AKAMAI-AS' },
+  { asn: 54113, name: 'FASTLY' },
+  { asn: 20940, name: 'AKAMAI-ASN1' },
+];
 const CAMPAIGNS = ['Brand - Exact', 'Generic - Shoes', 'Competitor', null];
 
 function build(siteId: number, opts: FixtureOpts = {}): { events: NewEvent[]; cases: FixtureCases } {
@@ -117,6 +129,7 @@ function build(siteId: number, opts: FixtureOpts = {}): { events: NewEvent[]; ca
     noBeacon: { gclids: [], ips: [] }, matchedLogs: { gclids: [] }, replay: { gclid: '', ips: [] },
     velocity: { ip: '', gclids: [] }, fpCollision: { fp_hash: '', ips: [], gclids: [] },
     subnet: { subnet: '', ips: [], gclids: [] }, cgnat: { ip: '', gclids: [] }, geo: { gclids: [], ips: [] },
+    relayIphone: { gclids: [], ips: [] }, iphoneCollision: { fp_hash: '', ips: [], gclids: [] }, reloadBurst: { ip: '', gclid: '' },
   };
 
   // ---- clean visits: ~60/day, 70% also produce a matching server-log line ----
@@ -179,7 +192,7 @@ function build(siteId: number, opts: FixtureOpts = {}): { events: NewEvent[]; ca
       if (usedIps.has(ip)) { i--; continue; }
       usedIps.add(ip);
       const g = gclid();
-      events.push(beaconVisit({ ts: iso(t0 + i * 8 * 60_000), ip, gclid: g, fp_hash: fp }));
+      events.push(beaconVisit({ ts: iso(t0 + i * 8 * 60_000), ip, gclid: g, fp_hash: fp, ua_family: 'chrome' }));
       cases.fpCollision.ips.push(ip); cases.fpCollision.gclids.push(g);
     }
   }
@@ -216,6 +229,42 @@ function build(siteId: number, opts: FixtureOpts = {}): { events: NewEvent[]; ca
     const ip = freshIp(); const g = gclid();
     events.push(beaconVisit({ ts: iso(start + rnd() * span), ip, gclid: g, country: pick(['RU', 'VN', 'BR']), asn: 8359, asn_name: 'MTS PJSC' }));
     cases.geo.gclids.push(g); cases.geo.ips.push(ip);
+  }
+
+  // iPhones on iCloud Private Relay: 12 ordinary visits, 3 per relay network. Fastly and AS20940
+  // rows carry is_hosting = 1, as stored while those networks were still on the hosting list.
+  for (let i = 0; i < 12; i++) {
+    const ip = freshIp(); const g = gclid(); const relay = RELAY[i % RELAY.length];
+    events.push(beaconVisit({ ts: iso(start + rnd() * span), ip, gclid: g, ua_family: 'safari-mobile', asn: relay.asn, asn_name: relay.name, is_hosting: relay.asn === 54113 || relay.asn === 20940 ? 1 : 0 }));
+    cases.relayIphone.gclids.push(g); cases.relayIphone.ips.push(ip);
+  }
+  // One iPhone model's fingerprint from 20 home connections over a day (2 of them Chrome on iOS).
+  // Four are quick mis-click bounces, so a fingerprint hit would converge with zero dwell.
+  {
+    const fp = hex(32); cases.iphoneCollision.fp_hash = fp;
+    const t0 = start + 6 * 3_600e3;
+    for (let i = 0; i < 20; i++) {
+      const ip = freshIp(); const g = gclid();
+      const ios = i % 10 === 9 ? { ua: UA_CHROME_IOS, ua_family: 'other-mobile' } : { ua_family: 'safari-mobile' };
+      const bounce = i % 5 === 0 ? { dwell_ms: int(400, 1_500), interactions: 0, visible: 1 as const } : {};
+      events.push(beaconVisit({ ts: iso(t0 + i * 50 * 60_000), ip, gclid: g, fp_hash: fp, ...ios, ...bounce }));
+      cases.iphoneCollision.ips.push(ip); cases.iphoneCollision.gclids.push(g);
+    }
+  }
+  // One visitor reloads the landing page 6 times in 4 minutes: same IP, same device, one click ID.
+  // Every load reaches the server log too; the early loads end quickly with no interaction.
+  {
+    const ip = freshIp(); const g = gclid(); const fp = hex(32); const isp = RESIDENTIAL[0];
+    cases.reloadBurst.ip = ip; cases.reloadBurst.gclid = g;
+    const t0 = start + 30 * 3_600e3;
+    for (let i = 0; i < 6; i++) {
+      const t = t0 + i * 48_000;
+      const last = i === 5;
+      const net = { ip, gclid: g, asn: isp.asn, asn_name: isp.name, ua_family: 'safari-mobile' };
+      events.push(base({ source: 'log', ts: iso(t), ...net, session_id: null, fp_hash: null }));
+      events.push(beaconVisit({ ts: iso(t + 1_500), ...net, fp_hash: fp,
+        ...(last ? { dwell_ms: 95_000, interactions: 22 } : { dwell_ms: int(300, 1_800), interactions: 0 }) }));
+    }
   }
 
   events.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));

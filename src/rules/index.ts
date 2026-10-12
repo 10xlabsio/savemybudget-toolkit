@@ -2,7 +2,7 @@
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import { readFileSync } from 'node:fs';
 import { db, eventById, eventsInWindow, now } from '../db.js';
-import { subnet24 } from '../enrich/index.js';
+import { isPrivacyRelayAsn, isWebKitUa, subnet24 } from '../enrich/index.js';
 import type { AnalysisSummary, ClickEvent, RuleHit, ScoredEvent, Site, Source, Verdict } from '../types.js';
 
 export interface RuleDef {
@@ -28,16 +28,16 @@ export const DEFAULTS: Defaults = JSON.parse(readFileSync(new URL('./defaults.js
 const cfg = (id: string) => DEFAULTS.rules[id];
 
 export const RULES: RuleDef[] = [
-  { id: 'r1_hosting_asn', layer: 'network', kind: 'hard', weight: cfg('r1_hosting_asn').weight, title: 'Datacenter / hosting network', describe: 'IP belongs to a hosting provider network (AWS, GCP, Hetzner, OVH, ...). Real customers do not browse from datacenters.', needs: 'any' },
+  { id: 'r1_hosting_asn', layer: 'network', kind: 'hard', weight: cfg('r1_hosting_asn').weight, title: 'Datacenter / hosting network', describe: 'IP belongs to a hosting provider network (AWS, GCP, Hetzner, OVH, ...). Real customers do not browse from datacenters. Privacy-relay networks (iCloud Private Relay) never count.', needs: 'any' },
   { id: 'r3_geo', layer: 'network', kind: 'hard', weight: cfg('r3_geo').weight, title: 'Outside targeting', describe: 'IP country is not in the countries the campaign targets. Only runs when targeting is set on the site.', needs: 'any+targeting' },
   { id: 'r4_subnet_cluster', layer: 'network', kind: 'soft', weight: cfg('r4_subnet_cluster').weight, title: 'Subnet clustering', describe: 'Five or more distinct IPs from the same /24 within 15 minutes. Dampened when the user-agent mix on the range is diverse.', needs: 'any' },
   { id: 'r6_automation', layer: 'browser', kind: 'hard', weight: cfg('r6_automation').weight, title: 'Automation markers', describe: 'The browser announces itself as automated (navigator.webdriver, headless user agent, missing plugins/fonts).', needs: 'any' },
-  { id: 'r8_fp_collision', layer: 'browser', kind: 'soft', weight: cfg('r8_fp_collision').weight, title: 'Fingerprint collision', describe: 'The same browser fingerprint seen from five or more IPs within 24 hours.', needs: 'beacons' },
+  { id: 'r8_fp_collision', layer: 'browser', kind: 'soft', weight: cfg('r8_fp_collision').weight, title: 'Fingerprint collision', describe: 'The same browser fingerprint seen from five or more IPs within 24 hours (50 or more for iPhone, iPad and Safari, whose fingerprints are shared by everyone with the same model).', needs: 'beacons' },
   { id: 'r9_no_beacon', layer: 'browser', kind: 'hard', weight: cfg('r9_no_beacon').weight, title: 'Request seen, no beacon', describe: 'A request with a click ID reached the server but the tag never sent a beacon: the visitor did not run JavaScript. Downgraded to soft when beacon volume drops sharply.', needs: 'beacons+logs' },
   { id: 'r10_zero_dwell', layer: 'behaviour', kind: 'soft', weight: cfg('r10_zero_dwell').weight, title: 'Zero-dwell bounce', describe: 'Page closed within two seconds of visible time with no interaction.', needs: 'beacons' },
   { id: 'r11_dead_session', layer: 'behaviour', kind: 'soft', weight: cfg('r11_dead_session').weight, title: 'Dead session', describe: 'Zero mouse, scroll or touch events for the whole session.', needs: 'beacons' },
-  { id: 'r13_gclid_replay', layer: 'frequency', kind: 'hard', weight: cfg('r13_gclid_replay').weight, title: 'Click ID replay', describe: 'The same click ID hit the landing page two or more times, or arrived more than 24 hours after it was first seen.', needs: 'any' },
-  { id: 'r14_ip_velocity', layer: 'frequency', kind: 'soft', weight: cfg('r14_ip_velocity').weight, title: 'IP velocity', describe: 'Three or more paid clicks from one IP in 15 minutes, or five or more in 24 hours. Halved when the IP shows five or more browser families (CGNAT).', needs: 'any' },
+  { id: 'r13_gclid_replay', layer: 'frequency', kind: 'hard', weight: cfg('r13_gclid_replay').weight, title: 'Click ID replay', describe: 'The same click ID hit the landing page two or more times from a second IP or device, or with hits more than 10 minutes apart, or arrived more than 24 hours after it was first seen. One visitor reloading the page does not count.', needs: 'any' },
+  { id: 'r14_ip_velocity', layer: 'frequency', kind: 'soft', weight: cfg('r14_ip_velocity').weight, title: 'IP velocity', describe: 'Three or more paid clicks (distinct click IDs) from one IP in 15 minutes, or five or more in 24 hours. Reloads of one click do not count. Halved when the IP shows five or more browser families (CGNAT).', needs: 'any' },
 ];
 const RULE_BY_ID = new Map(RULES.map((r) => [r.id, r]));
 
@@ -77,7 +77,6 @@ function slidingWindow(
   width: number,
   min: number,
   distinctOf: (e: ClickEvent) => string,
-  countMode: 'distinct' | 'events' = 'distinct',
 ): Map<number, { e: ClickEvent; uaFamilies: number }> {
   const sorted = [...group].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
   const times = sorted.map((e) => Date.parse(e.ts));
@@ -86,7 +85,7 @@ function slidingWindow(
   for (let i = 0; i < sorted.length; i++) {
     while (j < sorted.length && times[j] <= times[i] + width) j++;
     const win = sorted.slice(i, j);
-    const n = countMode === 'distinct' ? new Set(win.map(distinctOf)).size : win.length;
+    const n = new Set(win.map(distinctOf)).size;
     if (n < min) continue;
     const ua = new Set(win.map((e) => e.ua_family ?? 'unknown')).size;
     for (const e of win) {
@@ -119,7 +118,8 @@ export function runAnalysis(
   const r10 = cfg('r10_zero_dwell');
   const r11 = cfg('r11_dead_session');
   for (const e of events) {
-    if (e.is_hosting) addHit(hits, e, 'r1_hosting_asn');
+    // is_hosting is set at ingest; rows stored before a relay network left the hosting list still carry 1
+    if (e.is_hosting && !isPrivacyRelayAsn(e.asn)) addHit(hits, e, 'r1_hosting_asn');
     if (targeting.length && e.country && !targeting.includes(e.country.toUpperCase())) addHit(hits, e, 'r3_geo');
     if (e.automation && e.automation.length) addHit(hits, e, 'r6_automation');
     if (e.source === 'beacon') {
@@ -140,10 +140,18 @@ export function runAnalysis(
   }
 
   // ---- r8 fingerprint collision ----
+  // WebKit (iPhone, iPad, Safari) fingerprints are shared per device model, so those
+  // visitors need webkit_min_ips distinct IPs on the hash instead of min_ips.
   const r8 = cfg('r8_fp_collision');
   for (const group of byFp.values()) {
-    const marked = slidingWindow(group, Number(r8.window_hours) * HOUR, Number(r8.min_ips), (e) => e.ip);
-    for (const { e } of marked.values()) addHit(hits, e, 'r8_fp_collision');
+    const w = Number(r8.window_hours) * HOUR;
+    const marked = slidingWindow(group, w, Number(r8.min_ips), (e) => e.ip);
+    if (!marked.size) continue;
+    const markedWebKit = slidingWindow(group, w, Number(r8.webkit_min_ips), (e) => e.ip);
+    for (const { e } of marked.values()) {
+      if (isWebKitUa(e.ua, e.ua_family) && !markedWebKit.has(e.id)) continue;
+      addHit(hits, e, 'r8_fp_collision');
+    }
   }
 
   // ---- r9 request seen, no beacon ----
@@ -181,6 +189,7 @@ export function runAnalysis(
   const r13 = cfg('r13_gclid_replay');
   const pairW = Number(r13.pair_window_min) * MIN;
   const maxAge = Number(r13.max_age_hours) * HOUR;
+  const minSpread = Number(r13.min_spread_min) * MIN;
   for (const group of byGclid.values()) {
     if (group.length < 2) continue;
     const sorted = [...group].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
@@ -196,9 +205,16 @@ export function runAnalysis(
       curStart = t;
       curSources = new Set([e.source]);
     }
-    const late = Date.parse(sorted[sorted.length - 1].ts) - first > maxAge;
-    if (sightings >= Number(r13.min_sightings) || late) {
-      const note = late && sightings < Number(r13.min_sightings) ? 'click ID seen again more than 24 h after first sighting' : `click ID seen ${sightings} times`;
+    const spanMs = Date.parse(sorted[sorted.length - 1].ts) - first;
+    const late = spanMs > maxAge;
+    // Many sightings alone is one visitor reloading. A replay needs a second IP or device
+    // (fingerprint), or sightings spread over more than min_spread_min.
+    const ips = new Set(sorted.map((e) => e.ip)).size;
+    const devices = new Set(sorted.map((e) => e.fp_hash).filter((x) => x)).size;
+    const spread = ips >= 2 || devices >= 2 || spanMs > minSpread;
+    const repeated = sightings >= Number(r13.min_sightings) && spread;
+    if (repeated || late) {
+      const note = late && !repeated ? 'click ID seen again more than 24 h after first sighting' : `click ID seen ${sightings} times`;
       for (const e of sorted) addHit(hits, e, 'r13_gclid_replay', undefined, undefined, note);
     }
   }
@@ -207,8 +223,9 @@ export function runAnalysis(
   const r14 = cfg('r14_ip_velocity');
   for (const group of byIp.values()) {
     if (group[0].ip_private) continue;
-    const short = slidingWindow(group, Number(r14.short_window_min) * MIN, Number(r14.short_min), (e) => String(e.id), 'events');
-    const long = slidingWindow(group, Number(r14.long_window_hours) * HOUR, Number(r14.long_min), (e) => String(e.id), 'events');
+    // counts distinct click IDs (ad clicks): a reload, or a beacon and its log line, is one click
+    const short = slidingWindow(group, Number(r14.short_window_min) * MIN, Number(r14.short_min), (e) => e.gclid);
+    const long = slidingWindow(group, Number(r14.long_window_hours) * HOUR, Number(r14.long_min), (e) => e.gclid);
     const merged = new Map<number, { e: ClickEvent; uaFamilies: number }>();
     for (const m of [short, long]) for (const [id, v] of m) { const p = merged.get(id); if (!p || p.uaFamilies < v.uaFamilies) merged.set(id, v); }
     for (const { e, uaFamilies } of merged.values()) {

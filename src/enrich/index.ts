@@ -69,9 +69,25 @@ export function lookupAsn(ip: string): AsnInfo {
 
 // ---------- hosting ASNs ----------
 
+/**
+ * Privacy-relay egress networks. iCloud Private Relay sends ordinary Safari and iPhone
+ * visitors out through these ASNs, so an address in them is a person behind a relay,
+ * not a datacenter. They never count as hosting, whatever `hosting-asns.txt` says.
+ */
+export const PRIVACY_RELAY_ASNS: ReadonlySet<number> = new Set([
+  13335, // Cloudflare
+  36183, // Akamai (Private Relay)
+  20940, // Akamai (also Private Relay egress)
+  54113, // Fastly
+]);
+
+export function isPrivacyRelayAsn(asn: number | null | undefined): boolean {
+  return asn != null && PRIVACY_RELAY_ASNS.has(asn);
+}
+
 let hosting: Set<number> | null = null;
 export function isHostingAsn(asn: number | null): boolean {
-  if (asn === null) return false;
+  if (asn === null || isPrivacyRelayAsn(asn)) return false;
   if (!hosting) {
     hosting = new Set();
     const p = join(dataDir, 'hosting-asns.txt');
@@ -124,6 +140,16 @@ function ipv6Groups(ip: string): string[] {
 }
 
 // ---------- user agent ----------
+
+/**
+ * WebKit browsers: everything on iPhone and iPad (every iOS browser is WebKit) and Safari
+ * on the Mac. They expose so little to fingerprint that one device model and OS version
+ * share a hash across many real people.
+ */
+export function isWebKitUa(ua: string | null | undefined, family: string | null | undefined): boolean {
+  if (family && /^safari(-mobile)?$/.test(family)) return true;
+  return !!ua && /\b(iPhone|iPad|iPod)\b/.test(ua);
+}
 
 export interface UaInfo { family: string; automation: string[] }
 

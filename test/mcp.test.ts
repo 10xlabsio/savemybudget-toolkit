@@ -359,6 +359,8 @@ describe('mcp', () => {
     const r9 = r.data.rules.find((x: any) => x.rule === 'r9_no_beacon');
     assert.equal(r9.params.match_window_min, 30);
     assert.ok(!('kind' in r9.params) && !('weight' in r9.params));
+    assert.equal(r.data.rules.find((x: any) => x.rule === 'r8_fp_collision').params.webkit_min_ips, 50);
+    assert.equal(r.data.rules.find((x: any) => x.rule === 'r13_gclid_replay').params.min_spread_min, 10);
     assert.equal(r.data.scoring.score_threshold, 70);
   });
 

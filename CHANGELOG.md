@@ -2,15 +2,6 @@
 
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-- Detection false positives on ordinary iPhone and Safari visitors:
-  - **Rule 1 (hosting network):** iCloud Private Relay networks — Cloudflare (AS13335), Akamai (AS36183 and AS20940) and Fastly (AS54113) — are no longer treated as hosting. Fastly and Akamai AS20940 are removed from `data/hosting-asns.txt`, and the rule skips all four even for clicks stored before this release, so re-running an analysis corrects older windows.
-  - **Rule 8 (fingerprint collision):** iPhone, iPad and Safari fingerprints are shared by everyone with the same device model, so those visitors need 50 IPs on one fingerprint (new `webkit_min_ips` default) instead of 5.
-  - **Rule 13 (click ID replay):** repeated hits now need a second IP or device, or hits more than 10 minutes apart (new `min_spread_min` default). One visitor reloading the landing page is no longer flagged. A click ID seen again after 24 hours still is.
-  - **Rule 14 (IP velocity):** counts distinct click IDs, so reloads, and a beacon with its matching log line, count as one paid click.
-
 ## [1.1.0] — 2026-10-02
 
 ### Added
@@ -20,6 +11,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Settings counters `mcp_calls`, `mcp_unauthorized` and `mcp_signins`; the daily heartbeat reports whether MCP is on and the call count.
 
 ### Fixed
+- Detection false positives on ordinary iPhone and Safari visitors:
+  - **Rule 1 (hosting network):** iCloud Private Relay networks — Cloudflare (AS13335), Akamai (AS36183 and AS20940) and Fastly (AS54113) — are no longer treated as hosting. Fastly and Akamai AS20940 are removed from `data/hosting-asns.txt`, and the rule skips all four even for clicks stored before this release, so re-running an analysis corrects older windows.
+  - **Rule 8 (fingerprint collision):** iPhone, iPad and Safari fingerprints are shared by everyone with the same device model, so those visitors need 50 IPs on one fingerprint (new `webkit_min_ips` default) instead of 5.
+  - **Rule 13 (click ID replay):** repeated hits now need a second IP or device, or hits more than 10 minutes apart (new `min_spread_min` default). One visitor reloading the landing page is no longer flagged. A click ID seen again after 24 hours still is.
+  - **Rule 14 (IP velocity):** counts distinct click IDs, so reloads, and a beacon with its matching log line, count as one paid click.
 - Collector rate limit behind a proxy: with `SMB_TRUST_PROXY=1` the 120-a-minute limit is now per visitor (the hop the proxy appended; IPv6 per /64) instead of per connection. Behind Caddy every beacon arrives from Caddy's address, so the whole instance shared one 120-a-minute bucket and a busy site — or a distributed click burst — lost beacons as `collect_ratelimited`.
 - `X-Forwarded-For` is believed only from a trusted proxy address: new `SMB_TRUSTED_PROXIES`, default loopback and private ranges (where Caddy sits in the Compose file). A client reaching the port directly is recorded and limited on its own address. If your proxy connects from a public address, list it there. A rightmost hop that isn't an address now falls back to the connecting address rather than an earlier, client-written hop.
 - IPv6 /64 grouping (subnet clustering, top ranges) expands compressed addresses first, so `2001:db8::1` and `2001:db8:0:0::2` land in the same range.

@@ -4,3 +4,6 @@ data/*.db*
 data/uploads/
 data/packages/
 .env
+
+# Claude Code and parallel sessions
+.claude/worktrees/

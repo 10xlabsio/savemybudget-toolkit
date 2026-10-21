@@ -2,6 +2,12 @@
 
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+- The web UI now answers only to its own addresses: `127.0.0.1`, `localhost` and `[::1]` on the listening port, and the host of the public URL. A request that arrives under any other host name gets `421` before any page or cookie. If you open the UI by another name, such as a server's IP address, set the public URL (Settings or `SMB_PUBLIC_URL`) to match.
+- Form pages no longer contain the request-forgery token; the browser adds it from its cookie when a form is submitted.
+
 ## [1.1.0] — 2026-10-12
 
 ### Added

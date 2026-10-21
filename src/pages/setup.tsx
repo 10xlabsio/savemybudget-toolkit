@@ -5,7 +5,7 @@ import { TIMEZONES } from '../ui.js';
 import type { Site } from '../types.js';
 
 export interface SetupProps {
-  nonce: string; csrf: string; sites: Site[];
+  nonce: string; sites: Site[];
   publicUrl: string; tz: string; telemetryOn: boolean; telemetryEnv: boolean;
   saved?: boolean;
 }
@@ -23,7 +23,7 @@ o.className=j.ok&&j.warning?'note amber':'hint';}).catch(function(){o.className=
       <p class="sub">Three things to confirm, then add your first site.</p>
       {p.saved ? <div class="note green">Saved.</div> : null}
       <form method="post" action="/api/settings">
-        <Csrf token={p.csrf} />
+        <Csrf />
         <input type="hidden" name="_next" value="/setup?saved=1" />
         <div class="card">
           <h2>1. Public address</h2>

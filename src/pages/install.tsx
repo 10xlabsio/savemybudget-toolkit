@@ -56,7 +56,7 @@ export const PLATFORMS: { id: Platform; label: string; steps: string[] }[] = [
 const VERIFY_STEP = 'Come back to this page. It polls every five seconds and shows a green tick with the time the first visit arrived.';
 
 export interface InstallProps {
-  nonce: string; csrf: string; sites: Site[]; site: Site; publicUrl: string; hasBeacon: boolean; firstEventAt: string | null;
+  nonce: string; sites: Site[]; site: Site; publicUrl: string; hasBeacon: boolean; firstEventAt: string | null;
 }
 
 export function InstallPage(p: InstallProps) {

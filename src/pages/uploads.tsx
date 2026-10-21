@@ -8,7 +8,7 @@ import type { Site } from '../types.js';
 export interface UploadRow { id: number; filename: string; format: string; rows_imported: number; rows_total: number; range_from: string | null; range_to: string | null; created_at: string }
 
 export interface UploadsProps {
-  nonce: string; csrf: string; sites: Site[]; site: Site; notifications: Notification[]; uploads: UploadRow[]; maxUploadMb: number; flash?: string | null;
+  nonce: string; sites: Site[]; site: Site; notifications: Notification[]; uploads: UploadRow[]; maxUploadMb: number; flash?: string | null;
 }
 
 export function UploadsPage(p: UploadsProps) {
@@ -90,7 +90,7 @@ function kpi(l,v){return '<div class="kpi"><div class="l">'+l+'</div><div class=
                   <td>{fmtTime(u.created_at)}</td>
                   <td>
                     <form method="post" action={`/api/uploads/${u.id}/delete`} style="display:inline">
-                      <Csrf token={p.csrf} />
+                      <Csrf />
                       <button type="submit" class="btn sm danger">Delete</button>
                     </form>
                   </td>

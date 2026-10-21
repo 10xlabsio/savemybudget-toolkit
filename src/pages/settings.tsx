@@ -6,7 +6,7 @@ import type { Notification } from '../jobs/index.js';
 import type { Site } from '../types.js';
 
 export interface SettingsProps {
-  nonce: string; sites: Site[]; notifications: Notification[];
+  nonce: string; csrf: string; sites: Site[]; notifications: Notification[];
   publicUrl: string; tz: string; retentionDays: number; storeMb: number; silentHours: number;
   telemetryOn: boolean; telemetryEnv: boolean; updateCheckOn: boolean; updateCheckEnv: boolean;
   bind: string; counters: { key: string; value: number; what: string }[];
@@ -31,7 +31,7 @@ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.write
       {p.saved ? <div class="note green"><div>Saved.</div></div> : null}
       {p.error ? <div class="note red"><div>{p.error}</div></div> : null}
       <form method="post" action="/api/settings">
-        <Csrf />
+        <Csrf token={p.csrf} />
         <input type="hidden" name="_next" value="/settings?saved=1" />
         <div class="card">
           <h2>Instance</h2>
@@ -75,7 +75,7 @@ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.write
         <p><button type="submit" class="btn pri">Save settings</button></p>
       </form>
 
-      <McpCard {...p.mcp} />
+      <McpCard {...p.mcp} csrf={p.csrf} />
 
       <div class="card">
         <h2>Access</h2>
@@ -95,10 +95,10 @@ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.write
                     <td class="wrap">{s.name} <span class="hint mono">{displayHost(s.host)}</span></td>
                     <td style="white-space:nowrap">
                       <form method="post" action={`/api/sites/${s.id}/delete-data`} style="display:inline" data-confirm={`Delete all click records, uploads and analyses for ${s.name}? The site and its key stay.`}>
-                        <Csrf /><button type="submit" class="btn sm">Delete site data</button>
+                        <Csrf token={p.csrf} /><button type="submit" class="btn sm">Delete site data</button>
                       </form>{' '}
                       <form method="post" action={`/api/sites/${s.id}/delete`} style="display:inline" data-confirm={`Delete ${s.name} and everything recorded for it? The tag on the site will keep posting, but nothing will be stored.`}>
-                        <Csrf /><button type="submit" class="btn sm danger">Delete site</button>
+                        <Csrf token={p.csrf} /><button type="submit" class="btn sm danger">Delete site</button>
                       </form>
                     </td>
                   </tr>
@@ -122,7 +122,7 @@ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.write
   );
 }
 
-function McpCard(m: SettingsProps['mcp']) {
+function McpCard(m: SettingsProps['mcp'] & { csrf: string }) {
   const endpoint = m.publicEndpoint ?? m.localEndpoint;
   const tok = m.token ?? '<your token>';
   const claudeCode = `claude mcp add --transport http savemybudget ${endpoint} --header "Authorization: Bearer ${tok}"`;
@@ -136,7 +136,7 @@ function McpCard(m: SettingsProps['mcp']) {
       {m.source === null ? (
         <>
           <p><b>Turned off.</b> <code>/mcp</code> answers 404 until you create a token.</p>
-          <form method="post" action="/api/mcp/enable"><Csrf /><button type="submit" class="btn pri">Turn on and create a token</button></form>
+          <form method="post" action="/api/mcp/enable"><Csrf token={m.csrf} /><button type="submit" class="btn pri">Turn on and create a token</button></form>
         </>
       ) : (
         <>
@@ -149,8 +149,8 @@ function McpCard(m: SettingsProps['mcp']) {
           ) : null}
           {m.source === 'settings' ? (
             <div>
-              <form method="post" action="/api/mcp/rotate" style="display:inline" data-confirm="Create a new token? Assistants using the old one stop working until you update them."><Csrf /><button type="submit" class="btn sm">New token</button></form>{' '}
-              <form method="post" action="/api/mcp/disable" style="display:inline" data-confirm="Turn off AI assistant access? The token stops working and /mcp answers 404."><Csrf /><button type="submit" class="btn sm danger">Turn off</button></form>
+              <form method="post" action="/api/mcp/rotate" style="display:inline" data-confirm="Create a new token? Assistants using the old one stop working until you update them."><Csrf token={m.csrf} /><button type="submit" class="btn sm">New token</button></form>{' '}
+              <form method="post" action="/api/mcp/disable" style="display:inline" data-confirm="Turn off AI assistant access? The token stops working and /mcp answers 404."><Csrf token={m.csrf} /><button type="submit" class="btn sm danger">Turn off</button></form>
             </div>
           ) : <p class="hint">To change or remove it, edit <code>SMB_MCP_TOKEN</code> and restart.</p>}
         </>
@@ -190,7 +190,7 @@ function McpCard(m: SettingsProps['mcp']) {
                 <thead><tr><th>Assistant</th><th>Signed in</th><th>Last used</th></tr></thead>
                 <tbody>{m.assistants.map((a) => <tr><td class="wrap">{a.clientName}</td><td>{relTime(a.since)}</td><td>{relTime(a.lastUsedAt)}</td></tr>)}</tbody>
               </table></div>
-              <form method="post" action="/api/mcp/signout" style="margin-top:8px" data-confirm="Sign out every assistant that signed in? The token keeps working; they can connect again with it."><Csrf /><button type="submit" class="btn sm">Sign out all</button></form>
+              <form method="post" action="/api/mcp/signout" style="margin-top:8px" data-confirm="Sign out every assistant that signed in? The token keeps working; they can connect again with it."><Csrf token={m.csrf} /><button type="submit" class="btn sm">Sign out all</button></form>
             </>
           ) : <p class="hint">None. Assistants that use the token directly (Claude Code, Cursor) aren't listed here.</p>}
         </>

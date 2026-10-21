@@ -124,7 +124,6 @@ export function Layout(p: LayoutProps) {
           {p.children}
           <div class="foot">SaveMyBudget Toolkit {config.version} · <a href="/docs/getting-started">Docs</a> · <a href="/about">About</a></div>
         </main>
-        <script nonce={p.nonce} dangerouslySetInnerHTML={{ __html: CSRF_FILL_JS }} />
       </body>
     </html>
   );
@@ -218,9 +217,6 @@ export const RuleChip = ({ id, kind }: { id: string; kind?: 'hard' | 'soft' }) =
   return <span class={`chip${hard ? ' hard' : ''}`} title={r?.describe ?? id}>{r?.title ?? id}</span>;
 };
 
-/** Forms carry an empty _csrf field; the token is copied from the cookie when the form is submitted, so it is never in the page. */
-const CSRF_FILL_JS = `document.addEventListener('submit',function(e){var f=e.target;if(!f||!f.querySelectorAll)return;var t=(document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||'';f.querySelectorAll('input[name=_csrf]').forEach(function(i){i.value=t});},true);`;
-
-export const Csrf = () => <input type="hidden" name="_csrf" value="" />;
+export const Csrf = ({ token }: { token: string }) => <input type="hidden" name="_csrf" value={token} />;
 
 export const Rel = ({ iso }: { iso: string | null | undefined }) => <span title={iso ?? ''}>{relTime(iso)}</span>;

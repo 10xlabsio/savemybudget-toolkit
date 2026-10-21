@@ -5,14 +5,14 @@ import { TIMEZONES } from '../ui.js';
 import type { Site } from '../types.js';
 
 export interface SetupProps {
-  nonce: string; sites: Site[];
+  nonce: string; csrf: string; sites: Site[];
   publicUrl: string; tz: string; telemetryOn: boolean; telemetryEnv: boolean;
   saved?: boolean;
 }
 
 export function SetupPage(p: SetupProps) {
   const check = `(function(){var b=document.getElementById('chk'),o=document.getElementById('chkout'),u=document.getElementById('public_url');
-function csrf(){return (document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}
+function csrf(){return ${JSON.stringify(p.csrf)}}
 b.addEventListener('click',function(){o.textContent='Checking…';
 fetch('/api/setup/check',{method:'POST',headers:{'x-csrf':csrf(),'content-type':'application/json'},body:JSON.stringify({url:u.value})}).then(function(r){return r.json()}).then(function(j){
 o.textContent=j.ok?'✓ Reachable — the collector answered at '+j.url+(j.warning?' — '+j.warning:''):'✗ '+(j.reason||j.error||'The check could not run.');
@@ -23,7 +23,7 @@ o.className=j.ok&&j.warning?'note amber':'hint';}).catch(function(){o.className=
       <p class="sub">Three things to confirm, then add your first site.</p>
       {p.saved ? <div class="note green">Saved.</div> : null}
       <form method="post" action="/api/settings">
-        <Csrf />
+        <Csrf token={p.csrf} />
         <input type="hidden" name="_next" value="/setup?saved=1" />
         <div class="card">
           <h2>1. Public address</h2>

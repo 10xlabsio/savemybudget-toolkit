@@ -12,7 +12,7 @@ export interface PackageRow { id: number; rows: number; created_at: string; rang
 export interface AnalysisListRow { id: number; range_from: string; range_to: string; ran_at: string; flag: number; total: number }
 
 export interface AnalyseProps {
-  nonce: string; sites: Site[]; site: Site; notifications: Notification[];
+  nonce: string; csrf: string; sites: Site[]; site: Site; notifications: Notification[];
   from: string; to: string; today: string;
   windowMsg: { message?: string; warning?: string } | null;
   error?: string | null;
@@ -35,7 +35,7 @@ export function AnalysePage(p: AnalyseProps) {
 
       <div class="card">
         <form method="post" action={`/api/sites/${p.site.id}/analyses`}>
-          <Csrf />
+          <Csrf token={p.csrf} />
           <div class="row" style="align-items:flex-end">
             <div style="flex:1;min-width:140px"><label for="from">From</label><input type="date" id="from" name="from" value={p.from} max={p.today} required /></div>
             <div style="flex:1;min-width:140px"><label for="to">To</label><input type="date" id="to" name="to" value={p.to} max={p.today} required /></div>
@@ -100,7 +100,7 @@ export function AnalysePage(p: AnalyseProps) {
             <h2>Build the claim package</h2>
             <p class="hint">A zip with evidence.csv, summary.md, form-answers.md and report.json. Nothing leaves your server.</p>
             <form method="post" action={`/api/analyses/${a.id}/package`}>
-              <Csrf />
+              <Csrf token={p.csrf} />
               <label class="inl"><input type="checkbox" name="include_watch" value="1" /> Include watch rows (weaker signals; usually leave out)</label>
               <label class="inl"><input type="checkbox" name="exclusions" value="1" checked /> Include exclusions.txt (flagged IPs, for campaign IP exclusions if you choose)</label>
               <p><button type="submit" class="btn pri" disabled={s.counts.flag === 0 && s.counts.watch === 0}>Build package</button>
@@ -126,7 +126,7 @@ export function AnalysePage(p: AnalyseProps) {
                   <td class="num">{n(k.rows)}</td>
                   <td style="white-space:nowrap">
                     <a class="btn sm" href={`/api/packages/${k.id}/download`}>Download</a>{' '}
-                    <form method="post" action={`/api/packages/${k.id}/delete`} style="display:inline"><Csrf /><button type="submit" class="btn sm danger">Delete</button></form>
+                    <form method="post" action={`/api/packages/${k.id}/delete`} style="display:inline"><Csrf token={p.csrf} /><button type="submit" class="btn sm danger">Delete</button></form>
                   </td>
                 </tr>
               ))}

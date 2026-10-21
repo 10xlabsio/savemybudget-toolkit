@@ -67,33 +67,34 @@ app.mount('/.well-known', wellKnownApp.fetch);
 const UI_EXEMPT_FROM_SETUP = (path: string) =>
   path === '/setup' || path.startsWith('/api/') || path.startsWith('/docs/') || path === '/about' || path === '/settings' || path.startsWith('/templates/') || path === '/sites/new' || path === '/api/sites';
 
-/** Host header values the UI answers to: loopback on the listening port, and the host of the public URL. Anything else is a DNS-rebinding attempt. */
+/** Drops the default port so "host" and "host:443" compare equal. */
+const normHost = (h: string) => h.toLowerCase().replace(/:(80|443)$/, '');
+
+/** Host values the UI answers to: loopback on the listening port, plus the host of SMB_UI_URL when set. Environment only; nothing editable in the UI feeds this list. */
 function hostAllowed(host: string | undefined): boolean {
   if (!host) return false;
-  const h = host.toLowerCase();
+  const h = normHost(host);
   const p = config.port;
-  if (h === `127.0.0.1:${p}` || h === `localhost:${p}` || h === `[::1]:${p}`) return true;
-  const pub = publicUrl();
-  if (pub) {
-    try { if (h === new URL(pub).host.toLowerCase()) return true; } catch { /* unparsable public URL: loopback only */ }
+  if (h === normHost(`127.0.0.1:${p}`) || h === normHost(`localhost:${p}`) || h === normHost(`[::1]:${p}`)) return true;
+  if (config.uiUrl) {
+    try { if (h === normHost(new URL(config.uiUrl).host)) return true; } catch { /* unparsable SMB_UI_URL: loopback only */ }
   }
   return false;
 }
 
 app.use('*', async (c, next) => {
-  // Before any handler, cookie or token: a request whose Host is not ours never reaches the UI.
-  if (!hostAllowed(c.req.header('host'))) return c.text('Misdirected request', 421, { 'cache-control': 'no-store' });
+  // Requests for a Host that is not one of ours get 421 before any handler, cookie or token.
+  if (!hostAllowed(c.req.header('host'))) return c.text('Misdirected request. This address is not one the Toolkit web UI is set up to answer on. To use another address, set SMB_UI_URL to it and restart.', 421, { 'cache-control': 'no-store' });
 
   const nonce = randomBytes(16).toString('base64');
   c.set('nonce', nonce);
   c.set('sites', listSites());
 
-  // CSRF cookie: per-process secret; readable by same-origin JS (fetch header, form field filled at submit), SameSite=Strict.
-  // The token is never written into a page's HTML.
+  // CSRF cookie: per-process secret, HttpOnly, SameSite=Strict. The token is also written into each page by the server, for its forms and fetches.
   // Secure when the request itself is https, or when a trusted proxy in front terminated TLS.
   const viaHttps = c.req.url.startsWith('https:') || (config.trustProxy && (c.req.header('x-forwarded-proto') ?? '').split(',')[0].trim().toLowerCase() === 'https');
   if (getCookie(c, CSRF_COOKIE) !== CSRF_SECRET) {
-    setCookie(c, CSRF_COOKIE, CSRF_SECRET, { path: '/', sameSite: 'Strict', httpOnly: false, secure: viaHttps });
+    setCookie(c, CSRF_COOKIE, CSRF_SECRET, { path: '/', sameSite: 'Strict', httpOnly: true, secure: viaHttps });
   }
 
   const method = c.req.method;
@@ -120,20 +121,20 @@ app.use('*', async (c, next) => {
   const h = c.res.headers;
   h.set('content-security-policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`);
   h.set('x-content-type-options', 'nosniff');
-  h.set('referrer-policy', 'no-referrer');
+  h.set('referrer-policy', 'same-origin');
   h.set('x-frame-options', 'DENY');
   if (!h.has('cache-control')) h.set('cache-control', 'no-store');
 });
 
 async function csrfProblem(c: Ctx): Promise<string | null> {
-  const host = c.req.header('host');
-  for (const hdr of ['origin', 'referer'] as const) {
-    const v = c.req.header(hdr);
-    if (!v || v === 'null') continue;
-    let h: string;
-    try { h = new URL(v).host; } catch { return `Bad ${hdr} header.`; }
-    if (h !== host) return `Cross-site request rejected (${hdr} does not match this host).`;
-  }
+  // A state-changing request must say where it came from: Origin, or Referer when there is no Origin.
+  // Missing, "null" or a host outside the allow-list is refused.
+  const origin = c.req.header('origin');
+  const source = origin !== undefined ? origin : c.req.header('referer');
+  if (!source || source === 'null') return 'Cross-site request rejected (no usable Origin).';
+  let sourceHost: string;
+  try { sourceHost = new URL(source).host; } catch { return 'Cross-site request rejected (bad Origin).'; }
+  if (!hostAllowed(sourceHost)) return 'Cross-site request rejected (Origin is not this site).';
   const cookie = getCookie(c, CSRF_COOKIE);
   const header = c.req.header('x-csrf');
   let token = header;
@@ -182,7 +183,7 @@ app.get('/TELEMETRY.md', (c) => c.redirect('/docs/telemetry', 302));
 app.get('/', (c) => c.redirect('/sites', 302));
 
 app.get('/setup', (c) => page(c, SetupPage({
-  nonce: c.get('nonce'), sites: c.get('sites'),
+  nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'),
   publicUrl: publicUrl(), tz: tz(), telemetryOn: telemetry.enabled(), telemetryEnv: config.telemetry, saved: c.req.query('saved') === '1',
 })));
 
@@ -230,12 +231,12 @@ function formValuesFromQuery(c: Ctx, site?: Site | null) {
   };
 }
 
-app.get('/sites/new', (c) => page(c, SiteFormPage({ nonce: c.get('nonce'), sites: c.get('sites'), values: formValuesFromQuery(c), error: c.req.query('error') ?? null })));
+app.get('/sites/new', (c) => page(c, SiteFormPage({ nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), values: formValuesFromQuery(c), error: c.req.query('error') ?? null })));
 
 app.get('/sites/:id/edit', (c) => {
   const site = siteOr404(c);
   if (!site) return c.notFound();
-  return page(c, SiteFormPage({ nonce: c.get('nonce'), sites: c.get('sites'), site, values: formValuesFromQuery(c, site), error: c.req.query('error') ?? null }));
+  return page(c, SiteFormPage({ nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, values: formValuesFromQuery(c, site), error: c.req.query('error') ?? null }));
 });
 
 app.get('/sites/:id/install', (c) => {
@@ -246,7 +247,7 @@ app.get('/sites/:id/install', (c) => {
     setSetting(key, new Date().toISOString());
     telemetry.track('snippet_generated', { consent_mode: site.consent_mode });
   }
-  return page(c, InstallPage({ nonce: c.get('nonce'), sites: c.get('sites'), site, publicUrl: publicUrl(), hasBeacon: !!site.first_event_at, firstEventAt: site.first_event_at }));
+  return page(c, InstallPage({ nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, publicUrl: publicUrl(), hasBeacon: !!site.first_event_at, firstEventAt: site.first_event_at }));
 });
 
 app.get('/sites/:id', (c) => {
@@ -291,7 +292,7 @@ app.get('/sites/:id/uploads', (c) => {
   const uploads = db().prepare('SELECT id, filename, format, rows_imported, rows_total, range_from, range_to, created_at FROM uploads WHERE site_id = ? ORDER BY created_at DESC').all(site.id) as unknown as UploadRow[];
   const imported = c.req.query('imported');
   return page(c, UploadsPage({
-    nonce: c.get('nonce'), sites: c.get('sites'), site, notifications: activeNotifications(site.id), uploads, maxUploadMb: config.maxUploadMb,
+    nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, notifications: activeNotifications(site.id), uploads, maxUploadMb: config.maxUploadMb,
     flash: imported ? `Imported ${Number(imported).toLocaleString('en-GB')} rows. They join the beacons in the next analysis.` : null,
   }));
 });
@@ -317,14 +318,14 @@ app.get('/sites/:id/analyse', (c) => {
   const packages = d.prepare('SELECT p.id, p.rows, p.created_at, p.analysis_id, a.range_from, a.range_to FROM packages p JOIN analyses a ON a.id = p.analysis_id WHERE a.site_id = ? ORDER BY p.created_at DESC').all(site.id) as unknown as PackageRow[];
   const pk = Number(c.req.query('package'));
   return page(c, AnalysePage({
-    nonce: c.get('nonce'), sites: c.get('sites'), site, notifications: activeNotifications(site.id),
+    nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, notifications: activeNotifications(site.id),
     from, to, today: today(), windowMsg: w.ok && !w.warning ? null : { message: w.ok ? undefined : w.message, warning: w.warning },
     error: c.req.query('error') ?? null, analysis, analyses, packages, justBuilt: Number.isInteger(pk) && pk > 0 ? pk : null,
   }));
 });
 
 app.get('/settings', (c) => page(c, SettingsPage({
-  nonce: c.get('nonce'), sites: c.get('sites'), notifications: activeNotifications(null),
+  nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), notifications: activeNotifications(null),
   publicUrl: publicUrl(), tz: tz(), retentionDays: retentionDays(), storeMb: storeSizeMb(), silentHours: silentThresholdHours(),
   telemetryOn: telemetry.enabled(), telemetryEnv: config.telemetry, updateCheckOn: config.updateCheck && getSetting('update_check') !== 'off', updateCheckEnv: config.updateCheck,
   bind: `${config.bind}:${config.port}`,

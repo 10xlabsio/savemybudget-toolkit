@@ -55,7 +55,7 @@ function healthLabel(s: Site): string {
 }
 
 export interface SiteFormProps {
-  nonce: string; sites: Site[];
+  nonce: string; csrf: string; sites: Site[];
   site?: Site | null;
   values: { name: string; host: string; consent_mode: string; target_countries: string[] };
   error?: string | null;
@@ -70,7 +70,7 @@ export function SiteFormPage(p: SiteFormProps) {
       <p class="sub">{editing ? 'The site key stays the same; the tag keeps working.' : 'One site per hostname your ads land on.'}</p>
       {p.error ? <div class="note red">{p.error}</div> : null}
       <form method="post" action={editing ? `/api/sites/${p.site!.id}` : '/api/sites'} class="card">
-        <Csrf />
+        <Csrf token={p.csrf} />
         <label for="name">Name</label>
         <input type="text" id="name" name="name" value={v.name} required maxlength={60} placeholder="Acme Shoes" />
         <label for="host">Hostname</label>

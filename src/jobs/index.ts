@@ -148,7 +148,7 @@ export function hourlyTick(nowDate = new Date()) {
     const first = listSites().map(s => s.first_event_at).filter(Boolean).sort()[0];
     if (first) {
       const hours = Math.round((Date.parse(first) - Date.parse(telemetry.firstBootAt())) / 3600e3);
-      telemetry.track('first_beacon', { hours_since_install: hours });
+      telemetry.track('first_beacon', { hours_since_install: telemetry.hoursBucket(hours) });
       telemetry.setFirstBeaconReported();
     }
   }
@@ -170,10 +170,10 @@ export async function dailyTick(nowDate = new Date()) {
       sites: sites.n,
       imports_used: uploads.n > 0,
       store_size: telemetry.mbBucket(storeSizeMb()),
-      uptime_hours: Math.round(process.uptime() / 3600),
-      sdk_errors: getCounter('sdk_errors'),
+      uptime_hours: telemetry.hoursBucket(process.uptime() / 3600),
+      sdk_errors: telemetry.bucket(getCounter('sdk_errors')),
       mcp_enabled: mcpEnabled(),
-      mcp_calls: getCounter('mcp_calls'),
+      mcp_calls: telemetry.bucket(getCounter('mcp_calls')),
     });
     telemetry.markHeartbeat();
   }

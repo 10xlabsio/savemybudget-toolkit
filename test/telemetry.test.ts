@@ -8,10 +8,12 @@ import { join } from 'node:path';
 
 process.env.SMB_DATA_DIR = mkdtempSync(join(tmpdir(), 'smb-telemetry-'));
 
-const { payload, ALLOWED } = await import('../src/telemetry/index.js');
+const { payload, ALLOWED, RULE_IDS, bucket, bucketRules, hoursBucket, windowDaysFor, nodeMajor } = await import('../src/telemetry/index.js');
+const { RULES } = await import('../src/rules/index.js');
 type EventName = import('../src/telemetry/index.js').EventName;
 
-const build = (event: EventName, props: Record<string, unknown>) => payload(event, props as never, 'instance-1', '1.1.0');
+const INSTANCE = '3f2b8c1e-5d4a-4e7b-9c6d-1a2b3c4d5e6f';
+const build = (event: EventName, props: Record<string, unknown>) => payload(event, props as never, INSTANCE, '1.1.0');
 
 const IDENTIFIERS: Record<string, unknown> = {
   customer_id_string: '1234567890',
@@ -28,11 +30,11 @@ const IDENTIFIERS: Record<string, unknown> = {
 describe('telemetry payload allow-list', () => {
   it('passes every documented event with in-range values', () => {
     const ok: Array<[EventName, Record<string, unknown>]> = [
-      ['instance_started', { version: '1.1.0', node: 'v22.5.1', os: 'linux', arch: 'x64', deploy_method: 'compose', first_boot: true }],
+      ['instance_started', { version: '1.1.0', node: 22, os: 'linux', arch: 'x64', deploy_method: 'compose', first_boot: true }],
       ['snippet_generated', { consent_mode: 'consent_gated' }],
-      ['first_beacon', { hours_since_install: 3 }],
-      ['heartbeat', { beacons_per_day: '1k-10k', distinct_gclids: '<1k', sites: 2, imports_used: false, store_size: '<100MB', uptime_hours: 30, sdk_errors: 0, mcp_enabled: true, mcp_calls: 12 }],
-      ['analysis_run', { rules: { r1_hosting_asn: 4, r13_gclid_replay: 0 }, flagged_share: '5-20%', window_days: 7, sources_beacon: true, sources_log: false, sources_csv: false, via: 'mcp' }],
+      ['first_beacon', { hours_since_install: '1-24h' }],
+      ['heartbeat', { beacons_per_day: '1k-10k', distinct_gclids: '<1k', sites: 2, imports_used: false, store_size: '<100MB', uptime_hours: '1-7d', sdk_errors: '0', mcp_enabled: true, mcp_calls: '<1k' }],
+      ['analysis_run', { rules: { r1_hosting_asn: '<1k', r13_gclid_replay: '0' }, flagged_share: '5-20%', window_days: 7, sources_beacon: true, sources_log: false, sources_csv: false, via: 'mcp' }],
       ['claim_package', { flagged_rows: '<1k', exclusions: true }],
       ['error', { stage: 'write', error_class: 'TypeError' }],
     ];
@@ -71,13 +73,24 @@ describe('telemetry payload allow-list', () => {
     assert.throws(() => build('heartbeat', { sites: 1.5 }), /telemetry/);
     assert.throws(() => build('heartbeat', { beacons_per_day: '12345' }), /telemetry/);
     assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: 'x' } }), /telemetry/);
+    assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: 4 } }), /telemetry/);
     assert.throws(() => build('analysis_run', { via: 'chat' }), /telemetry/);
   });
 
   it('keeps the module free of any import path to click data', () => {
     const src = readFileSync(new URL('../src/telemetry/index.ts', import.meta.url), 'utf8');
-    const specifiers = [...src.matchAll(/^import .* from '([^']+)'/gm)].map((m) => m[1]).sort();
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const specifiers = [
+      ...code.matchAll(/\b(?:import|export)\b[^;]*?\bfrom\s*['"]([^'"]+)['"]/g),
+      ...code.matchAll(/\bimport\s*['"]([^'"]+)['"]/g),
+      ...code.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g),
+    ].map((m) => m[1]).sort();
     assert.deepEqual(specifiers, ['../config.js', '../db.js', 'node:crypto']);
-    assert.doesNotMatch(src, /FROM\s+events/i);
+    assert.doesNotMatch(code, /\bimport\s*\((?!\s*['"])/, 'no computed dynamic import');
+    assert.doesNotMatch(code, /\brequire\s*\(/);
+    assert.doesNotMatch(code, /\b(?:FROM|JOIN|INTO|UPDATE)\s+(?!telemetry\b)\w+/i);
+    for (const table of ['events', 'verdicts', 'analyses', 'packages', 'uploads', 'leads', 'ads_']) {
+      assert.doesNotMatch(code, new RegExp(`\\b${table}`, 'i'), table);
+    }
   });
 });

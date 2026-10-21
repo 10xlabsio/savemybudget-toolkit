@@ -374,9 +374,9 @@ api.post('/sites/:id/analyses', async (c) => {
   const s = result.summary;
   const windowDays = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400e3) + 1;
   telemetry.track('analysis_run', {
-    rules: s.rules,
+    rules: telemetry.bucketRules(s.rules),
     flagged_share: telemetry.shareBucket(s.counts.total ? s.counts.flag / s.counts.total : 0),
-    window_days: windowDays,
+    window_days: telemetry.windowDaysFor(windowDays),
     sources_beacon: s.counts.sources.beacon > 0,
     sources_log: s.counts.sources.log > 0,
     sources_csv: s.counts.sources.csv > 0,

@@ -34,10 +34,39 @@ export function mbBucket(mb: number): string {
   return '>5GB';
 }
 
+export type HoursBucket = '<1h' | '1-24h' | '1-7d' | '7-30d' | '>30d';
+export function hoursBucket(h: number): HoursBucket {
+  if (!(h >= 1)) return '<1h';
+  if (h < 24) return '1-24h';
+  if (h < 168) return '1-7d';
+  if (h < 720) return '7-30d';
+  return '>30d';
+}
+/** Window length in days, capped so a very long window still reports instead of being refused. */
+export function windowDaysFor(days: number): number {
+  return Math.min(WINDOW_DAYS_MAX, Math.max(0, Math.round(Number.isFinite(days) ? days : 0)));
+}
+/** Per-rule counts as bucket labels. */
+export function bucketRules(rules: Record<string, number>): Record<string, Bucket> {
+  const out: Record<string, Bucket> = {};
+  for (const [k, n] of Object.entries(rules)) out[k] = bucket(n);
+  return out;
+}
+/** Node's major version only, as a small integer. */
+export function nodeMajor(v: string = process.version): number {
+  return Number.parseInt(v.replace(/^v/, ''), 10);
+}
+/** What an `instance_started` event carries. */
+export function startupProps(deployMethod: string, firstBoot: boolean): Props {
+  return { version: config.version, node: nodeMajor(), os: process.platform, arch: process.arch, deploy_method: deployMethod, first_boot: firstBoot };
+}
+
+const WINDOW_DAYS_MAX = 366;
+
 export type EventName = 'instance_started' | 'snippet_generated' | 'first_beacon' | 'heartbeat' | 'analysis_run' | 'claim_package' | 'error';
 
 type Scalar = string | number | boolean;
-export type Props = Record<string, Scalar | Record<string, number>>;
+export type Props = Record<string, Scalar | Record<string, string>>;
 
 export function enabled(): boolean {
   if (!config.telemetry) return false;
@@ -60,23 +89,41 @@ export function firstBootAt(): string {
   return r.first_boot_at;
 }
 
-type Check = (v: unknown) => boolean;
-const oneOf = (...allowed: string[]): Check => (v) => typeof v === 'string' && allowed.includes(v);
-const bool: Check = (v) => typeof v === 'boolean';
-/** Whole number, small enough that a 10-digit identifier cannot fit. */
-const count = (min = 0, max = 99_999_999): Check => (v) => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
-const VERSION = /^v?\d{1,3}(\.\d{1,3}){0,2}(-[0-9A-Za-z.]{1,16})?$/;
-const versionString: Check = (v) => typeof v === 'string' && v.length <= 32 && VERSION.test(v);
-const errorClass: Check = (v) => typeof v === 'string' && /^[A-Za-z]{0,32}Error$/.test(v);
-const ruleCounts: Check = (v) => {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
-  const e = Object.entries(v as Record<string, unknown>);
-  return e.length <= 40 && e.every(([k, n]) => /^r\d{1,2}_[a-z0-9_]{1,40}$/.test(k) && count()(n));
-};
+/** A check returns the value to send (always a fresh copy of what it checked) or NO to refuse it. */
+const NO: unique symbol = Symbol('refused');
+type Check = (v: unknown) => unknown;
+const oneOf = (...allowed: string[]): Check => (v) => (typeof v === 'string' && allowed.includes(v) ? v : NO);
+const bool: Check = (v) => (typeof v === 'boolean' ? v : NO);
+/** Whole number inside a realistic range, so a packed address or a 10-digit ID cannot pass as a count. */
+const count = (min: number, max: number): Check => (v) => (typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max ? v : NO);
+const PLAIN_VERSION = /^\d{1,3}\.\d{1,3}\.\d{1,3}(-(alpha|beta|rc)\.\d{1,3})?$/;
+const versionString: Check = (v) => (typeof v === 'string' && (PLAIN_VERSION.test(v) || v === config.version) ? v : NO);
+const errorClass: Check = (v) => (typeof v === 'string' && /^[A-Za-z]{0,32}Error$/.test(v) ? v : NO);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const BUCKET = oneOf('0', '<1k', '1k-10k', '10k-100k', '>100k');
+const BUCKETS = ['0', '<1k', '1k-10k', '10k-100k', '>100k'] as const;
+const BUCKET = oneOf(...BUCKETS);
 const SHARE = oneOf('0', '<5%', '5-20%', '>20%');
 const SIZE = oneOf('<100MB', '100MB-1GB', '1-5GB', '>5GB');
+const HOURS = oneOf('<1h', '1-24h', '1-7d', '7-30d', '>30d');
+
+/** The detection rules the toolkit ships. A test pins this list to the rules module, which this module never imports. */
+export const RULE_IDS: readonly string[] = Object.freeze([
+  'r1_hosting_asn', 'r3_geo', 'r4_subnet_cluster', 'r6_automation', 'r8_fp_collision',
+  'r9_no_beacon', 'r10_zero_dwell', 'r11_dead_session', 'r13_gclid_replay', 'r14_ip_velocity',
+]);
+/** Plain object, listed rule ids only, bucket labels only. Returns a fresh object; each value is read once. */
+const ruleCounts: Check = (v) => {
+  if (typeof v !== 'object' || v === null || Array.isArray(v) || Object.getPrototypeOf(v) !== Object.prototype) return NO;
+  const out: Record<string, string> = {};
+  for (const [k, n] of Object.entries(v)) {
+    if (!RULE_IDS.includes(k)) return NO;
+    const checked = BUCKET(n);
+    if (checked === NO) return NO;
+    out[k] = checked as string;
+  }
+  return out;
+};
 
 /**
  * The only keys each event may carry, and the only values each key may hold.
@@ -84,32 +131,32 @@ const SIZE = oneOf('<100MB', '100MB-1GB', '1-5GB', '>5GB');
  * not listed throws, and so does a value outside its enum, bucket or range.
  * A new field means a new line here, in TELEMETRY.md and in the tests.
  */
-export const ALLOWED: Record<EventName, Record<string, Check>> = {
+const SPEC: Record<EventName, Record<string, Check>> = {
   instance_started: {
     version: versionString,
-    node: versionString,
+    node: count(1, 99),
     os: oneOf('aix', 'android', 'darwin', 'freebsd', 'haiku', 'linux', 'openbsd', 'sunos', 'win32', 'cygwin', 'netbsd'),
     arch: oneOf('arm', 'arm64', 'ia32', 'loong64', 'mips', 'mipsel', 'ppc', 'ppc64', 'riscv64', 's390', 's390x', 'x64'),
     deploy_method: oneOf('compose', 'docker', 'npm'),
     first_boot: bool,
   },
   snippet_generated: { consent_mode: oneOf('legitimate_interest', 'consent_gated') },
-  first_beacon: { hours_since_install: count(-999_999, 999_999) },
+  first_beacon: { hours_since_install: HOURS },
   heartbeat: {
     beacons_per_day: BUCKET,
     distinct_gclids: BUCKET,
-    sites: count(),
+    sites: count(0, 1000),
     imports_used: bool,
     store_size: SIZE,
-    uptime_hours: count(),
-    sdk_errors: count(),
+    uptime_hours: HOURS,
+    sdk_errors: BUCKET,
     mcp_enabled: bool,
-    mcp_calls: count(),
+    mcp_calls: BUCKET,
   },
   analysis_run: {
     rules: ruleCounts,
     flagged_share: SHARE,
-    window_days: count(0, 3660),
+    window_days: count(0, WINDOW_DAYS_MAX),
     sources_beacon: bool,
     sources_log: bool,
     sources_csv: bool,
@@ -118,23 +165,29 @@ export const ALLOWED: Record<EventName, Record<string, Check>> = {
   claim_package: { flagged_rows: BUCKET, exclusions: bool, via: oneOf('mcp') },
   error: { stage: oneOf('collect', 'parse', 'enrich', 'score', 'write'), error_class: errorClass },
 };
+export const ALLOWED: Readonly<Record<EventName, Readonly<Record<string, Check>>>> = Object.freeze(
+  Object.fromEntries(Object.entries(SPEC).map(([e, spec]) => [e, Object.freeze(spec)])) as Record<EventName, Record<string, Check>>,
+);
 
 /** Pure: builds the wire payload. Throws on any event, key or value outside ALLOWED. */
 export function payload(event: EventName, props: Props, instance: string, version: string) {
   const spec = Object.hasOwn(ALLOWED, event) ? ALLOWED[event] : undefined;
   if (!spec) throw new Error('telemetry: unknown event');
-  const clean: Record<string, Scalar | Record<string, number>> = {};
+  if (typeof instance !== 'string' || !UUID.test(instance)) throw new Error('telemetry: instance id is not a UUID');
+  if (versionString(version) === NO) throw new Error('telemetry: toolkit version is outside its allowed set');
+  const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) {
     const check = Object.hasOwn(spec, k) ? spec[k] : undefined;
     if (!check) throw new Error(`telemetry: ${event} may not carry ${k}`);
-    if (!check(v)) throw new Error(`telemetry: value for ${event}.${k} is outside its allowed set`);
-    clean[k] = v as Scalar | Record<string, number>;
+    const value = check(v);
+    if (value === NO) throw new Error(`telemetry: value for ${event}.${k} is outside its allowed set`);
+    clean[k] = value;
   }
   return {
     api_key: config.posthogKey,
     event,
     distinct_id: instance,
-    properties: { ...clean, toolkit_version: version, $lib: 'smb-toolkit' },
+    properties: { ...clean, toolkit_version: version, $lib: 'smb-toolkit', $geoip_disable: true },
     timestamp: new Date().toISOString(),
   };
 }

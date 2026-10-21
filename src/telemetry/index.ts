@@ -7,8 +7,9 @@ import { config } from '../config.js';
 /**
  * Telemetry. Anonymous, bucketed, opt-out. This module has NO import path to
  * the events table by design; everything it sends is built by `payload()`,
- * a pure function whose output is checked by a unit test: no string longer
- * than 64 chars, no nested objects other than counts.
+ * a pure function with a per-event allow-list of keys whose values must be an
+ * enum, a bucket, a flag or a small count. Anything else throws, and a unit
+ * test feeds it identifiers to prove it.
  */
 
 export type Bucket = '0' | '<1k' | '1k-10k' | '10k-100k' | '>100k';
@@ -59,22 +60,75 @@ export function firstBootAt(): string {
   return r.first_boot_at;
 }
 
-/** Pure: builds the wire payload. Throws if anything looks like an identifier. */
+type Check = (v: unknown) => boolean;
+const oneOf = (...allowed: string[]): Check => (v) => typeof v === 'string' && allowed.includes(v);
+const bool: Check = (v) => typeof v === 'boolean';
+/** Whole number, small enough that a 10-digit identifier cannot fit. */
+const count = (min = 0, max = 99_999_999): Check => (v) => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
+const VERSION = /^v?\d{1,3}(\.\d{1,3}){0,2}(-[0-9A-Za-z.]{1,16})?$/;
+const versionString: Check = (v) => typeof v === 'string' && v.length <= 32 && VERSION.test(v);
+const errorClass: Check = (v) => typeof v === 'string' && /^[A-Za-z]{0,32}Error$/.test(v);
+const ruleCounts: Check = (v) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const e = Object.entries(v as Record<string, unknown>);
+  return e.length <= 40 && e.every(([k, n]) => /^r\d{1,2}_[a-z0-9_]{1,40}$/.test(k) && count()(n));
+};
+
+const BUCKET = oneOf('0', '<1k', '1k-10k', '10k-100k', '>100k');
+const SHARE = oneOf('0', '<5%', '5-20%', '>20%');
+const SIZE = oneOf('<100MB', '100MB-1GB', '1-5GB', '>5GB');
+
+/**
+ * The only keys each event may carry, and the only values each key may hold.
+ * Free text, identifiers, addresses and hostnames cannot pass: a key that is
+ * not listed throws, and so does a value outside its enum, bucket or range.
+ * A new field means a new line here, in TELEMETRY.md and in the tests.
+ */
+export const ALLOWED: Record<EventName, Record<string, Check>> = {
+  instance_started: {
+    version: versionString,
+    node: versionString,
+    os: oneOf('aix', 'android', 'darwin', 'freebsd', 'haiku', 'linux', 'openbsd', 'sunos', 'win32', 'cygwin', 'netbsd'),
+    arch: oneOf('arm', 'arm64', 'ia32', 'loong64', 'mips', 'mipsel', 'ppc', 'ppc64', 'riscv64', 's390', 's390x', 'x64'),
+    deploy_method: oneOf('compose', 'docker', 'npm'),
+    first_boot: bool,
+  },
+  snippet_generated: { consent_mode: oneOf('legitimate_interest', 'consent_gated') },
+  first_beacon: { hours_since_install: count(-999_999, 999_999) },
+  heartbeat: {
+    beacons_per_day: BUCKET,
+    distinct_gclids: BUCKET,
+    sites: count(),
+    imports_used: bool,
+    store_size: SIZE,
+    uptime_hours: count(),
+    sdk_errors: count(),
+    mcp_enabled: bool,
+    mcp_calls: count(),
+  },
+  analysis_run: {
+    rules: ruleCounts,
+    flagged_share: SHARE,
+    window_days: count(0, 3660),
+    sources_beacon: bool,
+    sources_log: bool,
+    sources_csv: bool,
+    via: oneOf('mcp'),
+  },
+  claim_package: { flagged_rows: BUCKET, exclusions: bool, via: oneOf('mcp') },
+  error: { stage: oneOf('collect', 'parse', 'enrich', 'score', 'write'), error_class: errorClass },
+};
+
+/** Pure: builds the wire payload. Throws on any event, key or value outside ALLOWED. */
 export function payload(event: EventName, props: Props, instance: string, version: string) {
+  const spec = Object.hasOwn(ALLOWED, event) ? ALLOWED[event] : undefined;
+  if (!spec) throw new Error('telemetry: unknown event');
   const clean: Record<string, Scalar | Record<string, number>> = {};
   for (const [k, v] of Object.entries(props)) {
-    if (typeof v === 'string') {
-      if (v.length > 64) throw new Error(`telemetry: value too long for ${k}`);
-      clean[k] = v;
-    } else if (typeof v === 'number' || typeof v === 'boolean') clean[k] = v;
-    else if (v && typeof v === 'object') {
-      const o: Record<string, number> = {};
-      for (const [kk, vv] of Object.entries(v)) {
-        if (typeof vv !== 'number' || kk.length > 64) throw new Error(`telemetry: bad nested value for ${k}.${kk}`);
-        o[kk] = vv;
-      }
-      clean[k] = o;
-    }
+    const check = Object.hasOwn(spec, k) ? spec[k] : undefined;
+    if (!check) throw new Error(`telemetry: ${event} may not carry ${k}`);
+    if (!check(v)) throw new Error(`telemetry: value for ${event}.${k} is outside its allowed set`);
+    clean[k] = v as Scalar | Record<string, number>;
   }
   return {
     api_key: config.posthogKey,

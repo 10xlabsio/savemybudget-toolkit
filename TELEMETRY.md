@@ -17,7 +17,7 @@ The first time the toolkit starts it prints one line saying telemetry is on and 
 ## Two things that always hold
 
 1. **The tag on your website never contacts SaveMyBudget.** Telemetry goes from your server to ours; nothing runs in your visitors' browsers except the SDK talking to your own collector. Read the snippet — there is no SaveMyBudget hostname in it.
-2. **Telemetry and click data never share code.** The telemetry module cannot read the events table. Its payload builder is a pure function, and a test asserts that no field it produces can hold a string longer than 64 characters, so an identifier can't slip through by accident.
+2. **Telemetry and click data never share code.** The telemetry module cannot read the events table. Its payload builder is a pure function with a fixed list of fields per event, and each field accepts only a set value, a bucket, a yes/no flag or a small count. Anything else is refused, not trimmed, so an identifier can't slip through by accident. Tests feed it customer IDs, IP addresses, click IDs, email addresses, domains and URLs and check that every one is rejected.
 
 ## What is sent
 
@@ -32,6 +32,8 @@ Each instance has a random identifier written to the data volume on first run. I
 | `analysis_run` | when rules are run | count of clicks each rule fired on, flagged share (bucket), window length in days, which sources were present, and `via: mcp` when an AI assistant ran it |
 | `claim_package` | when a package is built | flagged rows (bucket), whether the exclusions list was included, and `via: mcp` when an AI assistant built it |
 | `error` | on an unexpected error | which stage (`collect`, `parse`, `enrich`, `score`, `write`) and the error class name |
+
+Fields are fixed per event; a field not listed above is never sent. Every value is a set choice (for example `os`, `deploy_method`, `stage`), a bucket, a flag, or a whole number small enough that it cannot hold an ID. Version fields hold only a version number, and `error_class` only a class name ending in `Error`. If the toolkit ever built a payload with anything else, it would drop the event rather than send it.
 
 Buckets are ranges such as `<1k`, `1k–10k`, `10k–100k`, `>100k`. Counts are integers. Nothing else.
 

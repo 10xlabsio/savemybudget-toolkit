@@ -2,6 +2,11 @@
 
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Telemetry payloads are checked against a fixed list of fields per event, each limited to a set value, bucket, flag or small count. Previously only long strings were refused, so an identifier such as an ID, address, click ID, email or hostname could have been sent if code ever passed one. Anything outside the list is now refused and the event is dropped. [TELEMETRY.md](TELEMETRY.md) is updated.
+
 ## [1.1.0] — 2026-10-12
 
 ### Added

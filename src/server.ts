@@ -6,11 +6,20 @@ import { serve } from '@hono/node-server';
 import { app } from './app.js';
 import { config } from './config.js';
 import { db } from './db.js';
+import { InsufficientDiskSpace } from './migrations/index.js';
 import { startJobs, stopJobs, log } from './jobs/index.js';
 import * as telemetry from './telemetry/index.js';
 import { syncInstanceToken } from './mcp/oauth.js';
 
-db();
+try {
+  db(); // opens the store and runs pending migrations before anything listens
+} catch (err) {
+  if (err instanceof InsufficientDiskSpace) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  throw err;
+}
 telemetry.instanceId();
 syncInstanceToken(); // a changed SMB_MCP_TOKEN signs every assistant out
 

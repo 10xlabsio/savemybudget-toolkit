@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-process.env.SMB_DATA_DIR = mkdtempSync(join(tmpdir(), 'smb-ingest-'));
+process.env.SMB_DATA_DIR = mkdtempSync(join(tmpdir(), 'toolkit-ingest-'));
 
 const { openMemoryDb, createSite, db } = await import('../src/db.js');
 const { analyzeUpload, importUpload, parseUploadRows } = await import('../src/ingest/index.js');

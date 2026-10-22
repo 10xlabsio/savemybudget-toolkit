@@ -6,7 +6,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-process.env.SMB_DATA_DIR = mkdtempSync(join(tmpdir(), 'smb-app-'));
+process.env.SMB_DATA_DIR = mkdtempSync(join(tmpdir(), 'toolkit-app-'));
 process.env.SMB_PUBLIC_URL = 'https://t.shop.test';
 process.env.SMB_TELEMETRY = 'off';
 

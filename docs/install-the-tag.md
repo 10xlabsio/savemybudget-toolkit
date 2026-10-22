@@ -1,6 +1,6 @@
 # Install the tag
 
-The tag is the open-source [SaveMyBudget SDK](https://github.com/10xlabsio/savemybudget-sdk): a tiny loader (under 1 KB) that fetches the SDK (about 2.6 KB) from **your own toolkit** and posts one beacon when a page with a Google click ID loads, and one when it unloads. It records the click ID, the network the visit came from, the browser, whether the page was ever visible, how long it stayed open and whether there was any interaction. It never reads page content or form fields, and it never contacts SaveMyBudget.
+The tag is a tiny script served by your own toolkit: a loader (under 1 KB) that fetches the SDK (about 2.6 KB) from **your own toolkit** and posts one beacon when a page with a Google click ID loads, and one when it unloads. It records the click ID, the network the visit came from, the browser, whether the page was ever visible, how long it stayed open and whether there was any interaction. It never reads page content or form fields, and it never contacts SaveMyBudget.
 
 Before you start:
 

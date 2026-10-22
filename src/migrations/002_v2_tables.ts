@@ -39,11 +39,16 @@ export const v2Tables: Migration = {
     CREATE TRIGGER IF NOT EXISTS audit_log_no_replace BEFORE INSERT ON audit_log
       WHEN NEW.id IS NOT NULL AND EXISTS (SELECT 1 FROM audit_log WHERE id = NEW.id)
       BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
-    -- Counts only: a JSON object whose values are all integers, so no free text or identifiers can land here.
+    -- Counts only. The action is a short lowercase name and counts is a JSON object whose keys are short
+    -- lowercase names and whose values are all integers, so no identifier, address or free text can land here.
     CREATE TRIGGER IF NOT EXISTS audit_log_counts_only BEFORE INSERT ON audit_log
       WHEN NOT (json_valid(NEW.counts) AND json_type(NEW.counts) = 'object'
-                AND NOT EXISTS (SELECT 1 FROM json_each(NEW.counts) WHERE type != 'integer'))
-      BEGIN SELECT RAISE(ABORT, 'audit_log counts must be integers only'); END;
+                AND NOT EXISTS (SELECT 1 FROM json_each(NEW.counts)
+                                WHERE type != 'integer' OR key = '' OR length(key) > 64 OR key GLOB '*[^a-z_]*'))
+      BEGIN SELECT RAISE(ABORT, 'audit_log counts must be integers under lowercase a-z_ keys'); END;
+    CREATE TRIGGER IF NOT EXISTS audit_log_action_name BEFORE INSERT ON audit_log
+      WHEN NEW.action = '' OR length(NEW.action) > 64 OR NEW.action GLOB '*[^a-z_]*'
+      BEGIN SELECT RAISE(ABORT, 'audit_log action must be a lowercase a-z_ name'); END;
     `);
   },
 };

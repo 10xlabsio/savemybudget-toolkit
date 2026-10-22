@@ -24,7 +24,7 @@ If your policy or your jurisdiction requires consent for this kind of collection
 
 Default 90 days, purged nightly, configurable down to 60 (Google's claim window). Set it to the shortest period that still lets you file. Analyses and claim packages you build are kept until you delete them — they contain IP addresses too.
 
-Upgrading from 1.x leaves a full copy of the database, `backup-v1-<timestamp>.sqlite`, in the data directory. It holds the same visitor data as the database, including the events the retention purge removes from the live one. The toolkit deletes it automatically once the retention period has passed since the upgrade, and Settings shows a notice while it exists. To delete it earlier, remove the file. A request from a visitor to erase their data must cover this copy as well: delete it, or wait for it to be removed, before you tell the visitor the data is gone.
+Upgrading from 1.x leaves a full copy of the database, `backup-v1-<timestamp>.sqlite`, in the data directory. It holds the same visitor data as the database, including the events the retention purge removes from the live one. A 2.x toolkit deletes it automatically once the retention period has passed since the upgrade, and Settings shows a notice while it exists. If you go back to a 1.x image, nothing deletes it any more: remove the file yourself. To delete it earlier, remove the file. A request from a visitor to erase their data must cover this copy as well: delete it, or wait for it to be removed, before you tell the visitor the data is gone.
 
 ## Access
 

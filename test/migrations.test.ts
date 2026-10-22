@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const { runMigrations, fixDataDirModes, listBackups, purgeOldBackups, InsufficientDiskSpace, MIGRATIONS } = await import('../src/migrations/index.js');
@@ -166,9 +167,57 @@ describe('migrations', () => {
     put('{}');
     put('{"rows":12,"files":0}');
     for (const bad of ['not json', '[1,2]', '"text"', '{"ip":"203.0.113.9"}', '{"n":1.5}', '{"n":null}', '{"n":{"a":1}}']) {
-      assert.throws(() => put(bad), /integers only/, bad);
+      assert.throws(() => put(bad), /audit_log counts/, bad);
     }
     assert.equal(count(d, 'audit_log'), 2);
+  });
+
+  it('the audit log takes only plain lowercase keys and action names, so no identifier can be written as one', () => {
+    const d = new DatabaseSync(':memory:');
+    runMigrations(d);
+    const put = (action: string, counts = '{}') => d.prepare('INSERT INTO audit_log(at, action, counts) VALUES (1, ?, ?)').run(action, counts);
+    put('events_erased', '{"rows_removed":3}');
+    for (const bad of ['{"1.2.3.4 visitor@example.com":1}', '{"Rows":1}', '{"a-b":1}', '{"":1}', `{"${'a'.repeat(65)}":1}`]) {
+      assert.throws(() => put('x', bad), /audit_log/, bad);
+    }
+    for (const bad of ['erased 1.2.3.4 visitor@example.com', 'Erased', '', 'a'.repeat(65), 'x\ny']) {
+      assert.throws(() => put(bad), /audit_log/, JSON.stringify(bad));
+    }
+    assert.equal(count(d, 'audit_log'), 1);
+  });
+});
+
+describe('crash loop', () => {
+  it('a run that commits no migration deletes the copy it just took; each restart does not add another', () => {
+    const dir = tmp();
+    const path = makeV1File(dir);
+    const bad = { id: 3, name: 'bad', up() { throw new Error('boom'); } };
+    const first = { id: 2, name: 'first', backupFirst: true, up() { throw new Error('boom'); } };
+    for (let i = 0; i < 4; i++) {
+      const d = new DatabaseSync(path);
+      assert.throws(() => runMigrations(d, { dbPath: path, migrations: [baseline, first, bad], stamp: () => `20261021T10000${i}Z` }), /boom/);
+      d.close();
+    }
+    assert.deepEqual(listBackups(dir), []);
+  });
+
+  it('a copy from an earlier run survives a later failed run; a run that committed something keeps its copy', () => {
+    const dir = tmp();
+    const path = makeV1File(dir);
+    const earlier = join(dir, 'backup-v1-20260101T000000000Z.sqlite');
+    writeFileSync(earlier, 'x');
+    const boom = { id: 2, name: 'boom', backupFirst: true, up() { throw new Error('boom'); } };
+    let d = new DatabaseSync(path);
+    assert.throws(() => runMigrations(d, { dbPath: path, migrations: [baseline, boom], stamp: () => 'A' }), /boom/);
+    d.close();
+    assert.deepEqual(listBackups(dir).map((b) => b.name), ['backup-v1-20260101T000000000Z.sqlite']);
+
+    const ok = { id: 2, name: 'ok', backupFirst: true, up(x: DatabaseSync) { x.exec('CREATE TABLE t (a)'); } };
+    const bad = { id: 3, name: 'bad', up() { throw new Error('boom'); } };
+    d = new DatabaseSync(path);
+    assert.throws(() => runMigrations(d, { dbPath: path, migrations: [baseline, ok, bad], stamp: () => 'B' }), /boom/);
+    d.close();
+    assert.equal(listBackups(dir).length, 2);
   });
 });
 
@@ -271,11 +320,35 @@ describe('pre-upgrade copy retention', () => {
     age(join(dir, files.old), 120, now);
     age(join(dir, files.edge), 90, now);
     age(join(dir, files.young), 11, now);
-    assert.deepEqual(listBackups(dir).map((b) => b.name), [files.old, files.edge, files.young]);
+    assert.deepEqual(listBackups(dir, now).map((b) => b.name), [files.old, files.edge, files.young]);
 
     assert.equal(purgeOldBackups(dir, 90, now), 2);
-    assert.deepEqual(listBackups(dir).map((b) => b.name), [files.young]);
+    assert.deepEqual(listBackups(dir, now).map((b) => b.name), [files.young]);
     for (const keep of ['toolkit.db', 'notes.sqlite', 'backup-v1-20260701T000000000Z.sqlite.partial']) assert.ok(existsSync(join(dir, keep)), keep);
+  });
+
+  it('a timestamp before the floor or in the future is treated as "now" at first sight, and that is recorded', () => {
+    const dir = tmp();
+    const now = Date.parse('2026-12-01T00:00:00Z');
+    const early = join(dir, 'backup-v1-A.sqlite'), future = join(dir, 'backup-v1-B.sqlite'), real = join(dir, 'backup-v1-C.sqlite');
+    for (const f of [early, future, real]) writeFileSync(f, 'x');
+    utimesSync(early, new Date(0), new Date(0));
+    utimesSync(future, new Date(now + 400 * 86400e3), new Date(now + 400 * 86400e3));
+    age(real, 120, now);
+    assert.equal(purgeOldBackups(dir, 90, now), 1); // only the genuinely old one; the odd ones are not deleted on sight
+    assert.ok(existsSync(early) && existsSync(future) && !existsSync(real));
+    assert.ok(Math.abs(statSync(early).mtimeMs - now) < 2000);
+    assert.ok(Math.abs(statSync(future).mtimeMs - now) < 2000);
+    assert.equal(purgeOldBackups(dir, 90, now + 89 * 86400e3), 0);
+    assert.equal(purgeOldBackups(dir, 90, now + 91 * 86400e3), 2); // they do expire, on schedule from first sight
+  });
+
+  it('a clock that is itself before the floor deletes nothing', () => {
+    const dir = tmp();
+    writeFileSync(join(dir, 'backup-v1-A.sqlite'), 'x');
+    utimesSync(join(dir, 'backup-v1-A.sqlite'), new Date(0), new Date(0));
+    assert.equal(purgeOldBackups(dir, 90, Date.parse('2000-01-01T00:00:00Z')), 0);
+    assert.equal(listBackups(dir).length, 1);
   });
 
   it('does nothing on a missing folder', () => {
@@ -351,6 +424,15 @@ describe('data directory permissions', () => {
     linkSync(outside, join(dir, 'toolkit.db'));
     fixDataDirModes(dir);
     assert.equal(mode(outside), 0o644);
+  });
+
+  it('a FIFO named like a toolkit file does not hang the fix', () => {
+    const dir = tmp();
+    execFileSync('mkfifo', [join(dir, 'backup-v1-20261021T100000000Z.sqlite')]);
+    execFileSync('mkfifo', [join(dir, 'toolkit.db')]);
+    const r = spawnSync(process.execPath, ['--import', 'tsx', '-e', `const { fixDataDirModes } = await import('./src/migrations/index.ts'); fixDataDirModes(${JSON.stringify(dir)}); console.log('done');`], { timeout: 15000, encoding: 'utf8' });
+    assert.equal(r.error, undefined, 'timed out');
+    assert.match(r.stdout, /done/);
   });
 
   it('leaves unrelated files in the folder alone', () => {

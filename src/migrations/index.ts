@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 import type { DatabaseSync } from 'node:sqlite';
-import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmSync, statSync, statfsSync } from 'node:fs';
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmSync, statSync, statfsSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { baseline } from './001_v1_baseline.js';
 import { v2Tables } from './002_v2_tables.js';
@@ -72,7 +72,10 @@ export function runMigrations(d: DatabaseSync, opts: MigrateOptions = {}): void 
   const pending = all.filter((m) => !applied.has(m.id)).sort((a, b) => a.id - b.id);
   if (!pending.length) return;
 
-  if (hadData && opts.dbPath && pending.some((m) => m.backupFirst)) backupBeforeUpgrade(d, opts.dbPath, opts);
+  const taken = hadData && opts.dbPath && pending.some((m) => m.backupFirst) ? backupBeforeUpgrade(d, opts.dbPath, opts) : null;
+  // Migrations before the first one that needs the copy only create bookkeeping (the 1.x baseline on a 1.x file); they do not count as a change.
+  const guardId = Math.min(...pending.filter((m) => m.backupFirst).map((m) => m.id));
+  let committed = 0;
 
   d.exec('CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
   for (const m of pending) {
@@ -81,9 +84,12 @@ export function runMigrations(d: DatabaseSync, opts: MigrateOptions = {}): void 
       m.up(d);
       d.prepare('INSERT INTO _migrations(id, name, applied_at) VALUES(?, ?, ?)').run(m.id, m.name, new Date().toISOString());
       d.exec('COMMIT');
+      if (m.id >= guardId) committed++;
     } catch (err) {
       // SQLite may already have rolled back (a full disk does); a failing ROLLBACK must not hide the real error.
       if (d.isTransaction) { try { d.exec('ROLLBACK'); } catch { /* the original error matters more */ } }
+      // Nothing was changed, so the copy only duplicates the database; a crash-looping start must not pile them up.
+      if (taken && !committed) { try { rmSync(taken, { force: true }); } catch { /* left for the retention purge */ } }
       throw err;
     }
   }
@@ -100,7 +106,7 @@ function safeReaddir(dir: string): string[] { try { return readdirSync(dir); } c
  * Every upgrade attempt takes a fresh copy under a new name, so a backup never goes stale after a rollback
  * and an earlier copy is never overwritten.
  */
-function backupBeforeUpgrade(d: DatabaseSync, dbPath: string, opts: MigrateOptions): void {
+function backupBeforeUpgrade(d: DatabaseSync, dbPath: string, opts: MigrateOptions): string {
   const dir = opts.dataDir ?? dirname(dbPath);
   // A copy left half-written by a crash holds space we are about to need.
   for (const f of safeReaddir(dir)) if (BACKUP_PARTIAL_RE.test(f)) rmSync(join(dir, f), { force: true });
@@ -115,16 +121,34 @@ function backupBeforeUpgrade(d: DatabaseSync, dbPath: string, opts: MigrateOptio
   const fd = openSync(partial, constants.O_RDONLY);
   try { fchmodSync(fd, 0o600); } finally { closeSync(fd); }
   renameSync(partial, final); // a copy under its final name is a complete one
+  return final;
 }
 
-/** The pre-upgrade copies in `dir`, oldest first, with when each was written (ms since the epoch). */
-export function listBackups(dir: string): { name: string; at: number }[] {
+/** Timestamps before this are a clock that was never set (or a copied-over epoch), not a real write time. */
+const CLOCK_FLOOR_MS = Date.UTC(2026, 0, 1);
+const FUTURE_SLACK_MS = 86400e3;
+
+/**
+ * The pre-upgrade copies in `dir`, oldest first, with when each counts as written (ms since the epoch).
+ * A modification time before 2026-01-01 or more than a day ahead of `nowMs` cannot be trusted (an unsynced
+ * clock): such a copy counts from now, and the file's time is set to now so the date is recorded and stays put.
+ * With a clock of its own before the floor, times are reported as they are and nothing is touched.
+ */
+export function listBackups(dir: string, nowMs = Date.now()): { name: string; at: number }[] {
   const out: { name: string; at: number }[] = [];
+  const clockOk = nowMs >= CLOCK_FLOOR_MS;
   for (const name of safeReaddir(dir)) {
     if (!BACKUP_RE.test(name)) continue;
     try {
-      const st = lstatSync(join(dir, name));
-      if (st.isFile()) out.push({ name, at: st.mtimeMs });
+      const p = join(dir, name);
+      const st = lstatSync(p);
+      if (!st.isFile()) continue;
+      let at = st.mtimeMs;
+      if (clockOk && (at < CLOCK_FLOOR_MS || at > nowMs + FUTURE_SLACK_MS)) {
+        at = nowMs;
+        try { utimesSync(p, new Date(nowMs), new Date(nowMs)); } catch { /* counts from now again next time */ }
+      }
+      out.push({ name, at });
     } catch { /* gone */ }
   }
   return out.sort((a, b) => a.at - b.at);
@@ -132,8 +156,9 @@ export function listBackups(dir: string): { name: string; at: number }[] {
 
 /** Deletes pre-upgrade copies written at least `days` days before `nowMs`. Returns how many went. */
 export function purgeOldBackups(dir: string, days: number, nowMs = Date.now()): number {
+  if (nowMs < CLOCK_FLOOR_MS) return 0; // this machine's clock is not set: delete nothing
   let n = 0;
-  for (const b of listBackups(dir)) {
+  for (const b of listBackups(dir, nowMs)) {
     if (nowMs - b.at < days * 86400e3) continue;
     try { rmSync(join(dir, b.name)); n++; } catch { /* in use or gone; next night */ }
   }
@@ -160,7 +185,7 @@ export function fixDataDirModes(dir: string): void {
   const tighten = (p: string, isDir: boolean): boolean => {
     let fd: number | null = null;
     try {
-      fd = openSync(p, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (isDir ? (constants.O_DIRECTORY ?? 0) : 0));
+      fd = openSync(p, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0) | (isDir ? (constants.O_DIRECTORY ?? 0) : 0));
       const st = fstatSync(fd);
       if (isDir ? !st.isDirectory() : !st.isFile()) return false;
       if (uid !== null && st.uid !== uid) return false;

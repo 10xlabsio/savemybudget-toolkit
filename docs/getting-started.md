@@ -72,7 +72,7 @@ Your data is in the `smb-data` volume and survives updates. The UI shows a notic
 
 The first start on a 2.x image upgrades the database in place; your existing records are kept. Before it changes anything, the toolkit checks that the volume has room for a full copy, then writes `backup-v1-<timestamp>.sqlite` into the data directory (readable by its owner only). If there isn't room, it prints how much is needed and stops without touching your data: free some space and start again.
 
-To go back: stop the container, copy the `backup-v1-<timestamp>.sqlite` file over `toolkit.db` (delete any `toolkit.db-wal` and `toolkit.db-shm` files next to it), set the image to `ghcr.io/10xlabsio/savemybudget-toolkit:1`, and start it. Every start that has to upgrade takes a new copy. The toolkit deletes the copy by itself once the retention period (default 90 days) has passed since the upgrade, and Settings shows a notice while one exists. Delete it sooner once you're happy with the new version; it holds the same visitor data as the database.
+To go back: stop the container, copy the `backup-v1-<timestamp>.sqlite` file over `toolkit.db` (delete any `toolkit.db-wal` and `toolkit.db-shm` files next to it), set the image to `ghcr.io/10xlabsio/savemybudget-toolkit:1`, and start it. Every start that has to upgrade takes a new copy. A 2.x toolkit deletes the copy by itself once the retention period (default 90 days) has passed since the upgrade, and Settings shows a notice while one exists. After you go back to 1.x, nothing deletes it: remove the file yourself when you no longer need it. Otherwise, delete it sooner once you're happy with the new version; it holds the same visitor data as the database.
 
 ## Backing up
 

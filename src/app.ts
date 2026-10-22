@@ -27,6 +27,7 @@ import { OverviewPage, type OverviewProps, type Range } from './pages/overview.j
 import { UploadsPage, type UploadRow } from './pages/uploads.js';
 import { AnalysePage, type AnalysisListRow, type PackageRow } from './pages/analyse.js';
 import { SettingsPage } from './pages/settings.js';
+import { listBackups } from './migrations/index.js';
 import { AboutPage } from './pages/about.js';
 import { DocsPage, DOC_PAGES } from './pages/docs.js';
 import { markdownToHtml, markdownTitle } from './pages/markdown.js';
@@ -311,6 +312,7 @@ app.get('/settings', (c) => page(c, SettingsPage({
   publicUrl: publicUrl(), tz: tz(), retentionDays: retentionDays(), storeMb: storeSizeMb(), silentHours: silentThresholdHours(),
   telemetryOn: telemetry.enabled(), telemetryEnv: config.telemetry, updateCheckOn: config.updateCheck && getSetting('update_check') !== 'off', updateCheckEnv: config.updateCheck,
   bind: `${config.bind}:${config.port}`,
+  backups: listBackups(config.dataDir).map((b) => ({ name: b.name, deleteAfter: new Date(b.at + retentionDays() * 86400e3).toISOString().slice(0, 10) })),
   mcp: {
     source: tokenSource(),
     token: c.req.method === 'GET' ? takeFlashToken() : null, // a HEAD must not use up the one showing

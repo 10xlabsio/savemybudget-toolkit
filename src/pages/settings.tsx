@@ -9,6 +9,7 @@ export interface SettingsProps {
   nonce: string; csrf: string; sites: Site[]; notifications: Notification[];
   publicUrl: string; tz: string; retentionDays: number; storeMb: number; silentHours: number;
   telemetryOn: boolean; telemetryEnv: boolean; updateCheckOn: boolean; updateCheckEnv: boolean;
+  backups: { name: string; deleteAfter: string }[];
   bind: string; counters: { key: string; value: number; what: string }[];
   mcp: {
     source: 'env' | 'settings' | null; token: string | null; publicEndpoint: string | null; localEndpoint: string; notice: string | null;
@@ -30,6 +31,13 @@ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.write
       <p class="sub">Instance-wide. Site details live on each site's edit page.</p>
       {p.saved ? <div class="note green"><div>Saved.</div></div> : null}
       {p.error ? <div class="note red"><div>{p.error}</div></div> : null}
+      {p.backups.length ? (
+        <div class="note amber"><div>
+          A copy of your data from before the last upgrade is kept in the data folder: {p.backups.map((b) => b.name).join(', ')}.
+          It holds visitor IP addresses, and the toolkit deletes it automatically from {p.backups.map((b) => b.deleteAfter).sort()[0]}.
+          Delete the file yourself sooner once you're happy with the new version.
+        </div></div>
+      ) : null}
       <form method="post" action="/api/settings">
         <Csrf token={p.csrf} />
         <input type="hidden" name="_next" value="/settings?saved=1" />

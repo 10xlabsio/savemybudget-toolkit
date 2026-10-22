@@ -2,6 +2,14 @@
 
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Numbered, forward-only database migrations, run at start before the server listens, each in its own transaction and recorded in `_migrations`.
+- New optional columns on sites and an append-only audit log. Nothing from 1.x changes, and the 1.x image still runs on the same file.
+- Upgrading an existing database first checks for free space and writes a fresh `backup-v1-<timestamp>.sqlite` (owner-only); with too little room it stops and changes nothing. The copy is deleted automatically once the retention period has passed, and Settings shows a notice while it exists.
+- The data directory and everything in it is owner-only (`0700` folders, `0600` files), and existing files are tightened at start.
+
 ## [1.1.0] — 2026-10-12
 
 ### Added

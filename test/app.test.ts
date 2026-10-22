@@ -544,3 +544,22 @@ describe('app', () => {
     assert.ok((await s.text()).includes('www.shop.test'));
   });
 });
+
+describe('pre-upgrade copy', () => {
+  it('Settings shows a notice while a copy exists, and the hourly job deletes it once the retention period has passed', async () => {
+    const { writeFileSync, existsSync } = await import('node:fs');
+    const { hourlyTick } = await import('../src/jobs/index.js');
+    openMemoryDb();
+    const file = join(process.env.SMB_DATA_DIR!, 'backup-v1-20261021T100000000Z.sqlite');
+    writeFileSync(file, 'x');
+    const html = await (await req('/settings')).text();
+    assert.match(html, /backup-v1-20261021T100000000Z\.sqlite/);
+    assert.match(html, /deletes it automatically/);
+
+    hourlyTick(new Date(Date.now() + 30 * 86400e3));
+    assert.ok(existsSync(file), 'kept inside the retention period');
+    hourlyTick(new Date(Date.now() + 100 * 86400e3));
+    assert.ok(!existsSync(file), 'removed after it');
+    assert.doesNotMatch(await (await req('/settings')).text(), /backup-v1-/);
+  });
+});

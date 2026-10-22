@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import * as telemetry from '../telemetry/index.js';
 import { mcpEnabled } from '../mcp/token.js';
 import { sweepOAuth } from '../mcp/oauth.js';
+import { purgeOldBackups } from '../migrations/index.js';
 
 // ---------- notifications ----------
 
@@ -95,6 +96,9 @@ export function hourlyTick(nowDate = new Date()) {
   // Retention purge
   const cutoff = new Date(nowDate.getTime() - retentionDays() * 86400e3).toISOString();
   if (Number(d.prepare('DELETE FROM events WHERE ts < ?').run(cutoff).changes) > 0) bumpDataGeneration();
+
+  // Pre-upgrade copies go once the retention period has passed since the upgrade
+  try { purgeOldBackups(config.dataDir, retentionDays(), nowDate.getTime()); } catch (e) { log('backup purge failed', e); }
 
   // Staged uploads nobody imported
   sweepStagedUploads(nowDate.getTime());

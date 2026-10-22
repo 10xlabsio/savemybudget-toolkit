@@ -1,16 +1,26 @@
 #!/usr/bin/env -S node --no-warnings=ExperimentalWarning
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
+import './umask.js'; // first: everything this process creates is private to its user
 import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { app } from './app.js';
 import { config } from './config.js';
 import { db } from './db.js';
+import { InsufficientDiskSpace } from './migrations/index.js';
 import { startJobs, stopJobs, log } from './jobs/index.js';
 import * as telemetry from './telemetry/index.js';
 import { syncInstanceToken } from './mcp/oauth.js';
 
-db();
+try {
+  db(); // opens the store and runs pending migrations before anything listens
+} catch (err) {
+  if (err instanceof InsufficientDiskSpace) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  throw err;
+}
 telemetry.instanceId();
 syncInstanceToken(); // a changed SMB_MCP_TOKEN signs every assistant out
 

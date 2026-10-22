@@ -13,6 +13,8 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 export const config = {
   version: pkg.version as string,
   publicUrl: env('SMB_PUBLIC_URL', ''),
+  /** Optional address the web UI is reached at (a reverse proxy name). Only ever read from the environment. */
+  uiUrl: env('SMB_UI_URL', ''),
   tz: env('SMB_TZ', 'UTC'),
   port: Number(env('SMB_PORT', '8080')),
   bind: env('SMB_BIND', '127.0.0.1'),

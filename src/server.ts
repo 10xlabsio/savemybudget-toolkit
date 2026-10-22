@@ -30,14 +30,7 @@ if (telemetry.enabled()) {
 
 const deployMethod = process.env.SMB_TRUST_PROXY === '1' && process.env.SMB_BIND === '0.0.0.0' ? 'compose' : existsSync('/.dockerenv') ? 'docker' : 'npm';
 const firstBoot = Date.now() - Date.parse(telemetry.firstBootAt()) < 60_000;
-telemetry.track('instance_started', {
-  version: config.version,
-  node: process.version,
-  os: process.platform,
-  arch: process.arch,
-  deploy_method: deployMethod,
-  first_boot: firstBoot,
-});
+telemetry.track('instance_started', telemetry.startupProps(deployMethod, firstBoot));
 
 if (!config.publicUrl) log('SMB_PUBLIC_URL is not set — set it in .env or on the setup page before installing the tag.');
 

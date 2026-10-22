@@ -14,7 +14,11 @@ const { config } = await import('../src/config.js');
 type EventName = import('../src/telemetry/index.js').EventName;
 
 const INSTANCE = '3f2b8c1e-5d4a-4e7b-9c6d-1a2b3c4d5e6f';
-const build = (event: EventName, props: Record<string, unknown>) => payload(event, props as never, INSTANCE, '1.1.0');
+const build = (event: EventName, props: Record<string, unknown>) => payload(event, props as never, INSTANCE, config.version);
+/** A field-level refusal; the version and instance-id guards use different messages, so they cannot satisfy this. */
+const REFUSED = /^Error: telemetry: value for [a-z_]+\.[a-z_]+ is outside its allowed set$/;
+/** This install's version with the patch number bumped: a well-formed version that is not ours. */
+const otherVersion = config.version.replace(/^(\d+)\.(\d+)\.(\d+)/, (_: string, a: string, b: string, c: string) => `${a}.${b}.${Number(c) + 1}`);
 
 const IDENTIFIERS: Record<string, unknown> = {
   customer_id_string: '1234567890',
@@ -31,7 +35,7 @@ const IDENTIFIERS: Record<string, unknown> = {
 describe('telemetry payload allow-list', () => {
   it('passes every documented event with in-range values', () => {
     const ok: Array<[EventName, Record<string, unknown>]> = [
-      ['instance_started', { version: '1.1.0', node: 22, os: 'linux', arch: 'x64', deploy_method: 'compose', first_boot: true }],
+      ['instance_started', { version: config.version, node: 22, os: 'linux', arch: 'x64', deploy_method: 'compose', first_boot: true }],
       ['snippet_generated', { consent_mode: 'consent_gated' }],
       ['first_beacon', { hours_since_install: '1-24h' }],
       ['heartbeat', { beacons_per_day: '1k-10k', distinct_gclids: '<1k', sites: 2, imports_used: false, store_size: '<100MB', uptime_hours: '1-7d', sdk_errors: '0', mcp_enabled: true, mcp_calls: '<1k' }],
@@ -42,20 +46,20 @@ describe('telemetry payload allow-list', () => {
     for (const [event, props] of ok) {
       const p = build(event, props);
       assert.equal(p.event, event);
-      assert.equal(p.properties.toolkit_version, '1.1.0');
+      assert.equal(p.properties.toolkit_version, config.version);
     }
     assert.deepEqual(Object.keys(ALLOWED).sort(), ok.map(([e]) => e).sort());
   });
 
   for (const [name, value] of Object.entries(IDENTIFIERS)) {
     it(`throws on ${name} in any string or count field`, () => {
-      assert.throws(() => build('instance_started', { version: value }), /telemetry/);
-      assert.throws(() => build('snippet_generated', { consent_mode: value }), /telemetry/);
-      assert.throws(() => build('heartbeat', { sites: value }), /telemetry/);
-      assert.throws(() => build('heartbeat', { store_size: value }), /telemetry/);
-      assert.throws(() => build('error', { stage: value }), /telemetry/);
-      assert.throws(() => build('error', { error_class: value }), /telemetry/);
-      assert.throws(() => build('analysis_run', { rules: { [String(value)]: 1 } }), /telemetry/);
+      assert.throws(() => build('instance_started', { version: value }), REFUSED);
+      assert.throws(() => build('snippet_generated', { consent_mode: value }), REFUSED);
+      assert.throws(() => build('heartbeat', { sites: value }), REFUSED);
+      assert.throws(() => build('heartbeat', { store_size: value }), REFUSED);
+      assert.throws(() => build('error', { stage: value }), REFUSED);
+      assert.throws(() => build('error', { error_class: value }), REFUSED);
+      assert.throws(() => build('analysis_run', { rules: { [String(value)]: 1 } }), REFUSED);
     });
 
     it(`throws on ${name} under an unlisted key`, () => {
@@ -69,13 +73,13 @@ describe('telemetry payload allow-list', () => {
     assert.throws(() => build('__proto__' as EventName, {}), /unknown event/);
     assert.throws(() => build('first_beacon', { host: 'x' }), /may not carry/);
     assert.throws(() => build('heartbeat', { constructor: 1 }), /may not carry/);
-    assert.throws(() => build('heartbeat', { sites: '2' }), /telemetry/);
-    assert.throws(() => build('heartbeat', { sites: { a: 1 } }), /telemetry/);
-    assert.throws(() => build('heartbeat', { sites: 1.5 }), /telemetry/);
-    assert.throws(() => build('heartbeat', { beacons_per_day: '12345' }), /telemetry/);
-    assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: 'x' } }), /telemetry/);
-    assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: 4 } }), /telemetry/);
-    assert.throws(() => build('analysis_run', { via: 'chat' }), /telemetry/);
+    assert.throws(() => build('heartbeat', { sites: '2' }), REFUSED);
+    assert.throws(() => build('heartbeat', { sites: { a: 1 } }), REFUSED);
+    assert.throws(() => build('heartbeat', { sites: 1.5 }), REFUSED);
+    assert.throws(() => build('heartbeat', { beacons_per_day: '12345' }), REFUSED);
+    assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: 'x' } }), REFUSED);
+    assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: 4 } }), REFUSED);
+    assert.throws(() => build('analysis_run', { via: 'chat' }), REFUSED);
   });
 
   it('keeps the module free of any import path to click data', () => {
@@ -98,20 +102,22 @@ describe('telemetry payload allow-list', () => {
 
 
 describe('telemetry version and instance id', () => {
-  const odd = ['1.1.0-203.0.113.7', '1.1.0-shop.example.com', '0-1234567890', '1.1.0+meta', '1.1.0\n', '1.1.1', '192.168.1', '9.9.9', ''];
+  const v0 = config.version;
+  const odd = [`${v0}-203.0.113.7`, `${v0}-shop.example.com`, '0-1234567890', `${v0}+meta`, `${v0}\n`, otherVersion, '192.168.1', '9.9.9', ''].filter((v) => v !== v0);
   for (const v of odd) {
     it(`refuses version ${JSON.stringify(v)} in the field and as the toolkit version`, () => {
-      assert.throws(() => build('instance_started', { version: v }), /telemetry/);
-      assert.throws(() => payload('first_beacon', {}, INSTANCE, v), /toolkit version/);
+      assert.throws(() => build('instance_started', { version: v }), REFUSED);
+      assert.throws(() => payload('first_beacon', {}, INSTANCE, v), /toolkit version is not this install's own/);
     });
   }
   it('accepts only this install\'s own version', () => {
-    assert.equal(config.version, '1.1.0');
+    assert.match(config.version, /^\d{1,3}\.\d{1,3}\.\d{1,3}(-(alpha|beta|rc)\.\d{1,3})?$/);
+    assert.notEqual(otherVersion, config.version);
     assert.equal(payload('first_beacon', {}, INSTANCE, config.version).properties.toolkit_version, config.version);
   });
   for (const id of ['', 'not-a-uuid', '203.0.113.7', '1234567890', 'shop.example.com', INSTANCE + 'x', INSTANCE + '\n']) {
     it(`refuses instance id ${JSON.stringify(id)}`, () => {
-      assert.throws(() => payload('first_beacon', {}, id, '1.1.0'), /UUID/);
+      assert.throws(() => payload('first_beacon', {}, id, config.version), /instance id is not a UUID/);
     });
   }
 });
@@ -137,20 +143,20 @@ describe('telemetry rule counts', () => {
   const rulesOf = (rules: unknown) => build('analysis_run', { rules });
   it('refuses keys that merely look like rule ids or encode an address', () => {
     for (const k of ['r1_203_0_113_7', 'r1_hosting_asn ', 'R1_HOSTING_ASN', '203_0_113_7', 'r99_x', 'toJSON', 'constructor']) {
-      assert.throws(() => rulesOf({ [k]: '0' }), /telemetry/, k);
+      assert.throws(() => rulesOf({ [k]: '0' }), REFUSED, k);
     }
-    assert.throws(() => rulesOf(JSON.parse('{"__proto__":{"r1_hosting_asn":"0"}}')), /telemetry/);
+    assert.throws(() => rulesOf(JSON.parse('{"__proto__":{"r1_hosting_asn":"0"}}')), REFUSED);
   });
   it('refuses a URL object, a null-prototype object, an array, a Map, a class instance and primitives', () => {
     class Counts { r1_hosting_asn = '0'; }
     const nullProto = Object.assign(Object.create(null), { r1_hosting_asn: '0' });
     for (const v of [new URL('https://shop.example.com/?gclid=abc'), nullProto, ['0'], new Map([['r1_hosting_asn', '0']]), new Counts(), 'r1_hosting_asn', 7, null, undefined, () => ({})]) {
-      assert.throws(() => rulesOf(v), /telemetry/);
+      assert.throws(() => rulesOf(v), REFUSED);
     }
   });
   it('refuses an own toJSON and never lets a function through', () => {
-    assert.throws(() => rulesOf({ r1_hosting_asn: '0', toJSON: () => ({ ip: '203.0.113.7' }) }), /telemetry/);
-    assert.throws(() => rulesOf({ r1_hosting_asn: () => '0' }), /telemetry/);
+    assert.throws(() => rulesOf({ r1_hosting_asn: '0', toJSON: () => ({ ip: '203.0.113.7' }) }), REFUSED);
+    assert.throws(() => rulesOf({ r1_hosting_asn: () => '0' }), REFUSED);
   });
   it('reads a getter once and sends the value it checked', () => {
     let reads = 0;
@@ -177,13 +183,13 @@ describe('a packed IPv4 address (16909060) in every field of every event', () =>
     for (const key of Object.keys(spec)) {
       it(`${event}.${key} refuses it`, () => {
         for (const v of forms) {
-          assert.throws(() => build(event as EventName, { [key]: v }), /telemetry/, `${event}.${key} = ${String(v)}`);
+          assert.throws(() => build(event as EventName, { [key]: v }), REFUSED, `${event}.${key} = ${String(v)}`);
         }
       });
     }
   }
   it('refuses it as a rule count', () => {
-    for (const v of forms) assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: v } }), /telemetry/);
+    for (const v of forms) assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: v } }), REFUSED);
   });
 });
 
@@ -198,8 +204,8 @@ describe('telemetry error class', () => {
     assert.equal(errorClassOf(null), 'OtherError');
   });
   it('refuses a class name outside the list', () => {
-    assert.throws(() => build('error', { error_class: 'ShopExampleComError' }), /telemetry/);
-    assert.throws(() => build('error', { error_class: '203.0.113.7Error' }), /telemetry/);
+    assert.throws(() => build('error', { error_class: 'ShopExampleComError' }), REFUSED);
+    assert.throws(() => build('error', { error_class: '203.0.113.7Error' }), REFUSED);
     assert.doesNotThrow(() => build('error', { error_class: 'OtherError' }));
   });
 });

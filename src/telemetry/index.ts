@@ -185,7 +185,7 @@ export function payload(event: EventName, props: Props, instance: string, versio
   const spec = Object.hasOwn(ALLOWED, event) ? ALLOWED[event] : undefined;
   if (!spec) throw new Error('telemetry: unknown event');
   if (typeof instance !== 'string' || !UUID.test(instance)) throw new Error('telemetry: instance id is not a UUID');
-  if (versionString(version) === NO) throw new Error('telemetry: toolkit version is outside its allowed set');
+  if (versionString(version) === NO) throw new Error("telemetry: toolkit version is not this install's own");
   const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) {
     const check = Object.hasOwn(spec, k) ? spec[k] : undefined;

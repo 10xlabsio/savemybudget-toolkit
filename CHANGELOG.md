@@ -9,6 +9,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - State-changing requests from the UI must now carry a same-site `Origin` (or `Referer`); requests without one, or with `Origin: null`, are refused with `403`.
 - The form token cookie is now `HttpOnly`.
 
+### Fixed
+- Telemetry payloads are checked against a fixed list of fields per event, each limited to a set value, bucket, flag or small count. Previously only long strings were refused, so an identifier such as an ID, address, click ID, email or hostname could have been sent if code ever passed one. Anything outside the list is now refused and the event is dropped. [TELEMETRY.md](TELEMETRY.md) is updated.
+- Telemetry wire format, as a result of that check: Node is sent as its major version only; durations (uptime, hours since install), counters and per-rule counts are sent as bucket labels; the site count is capped at 1000; the version is the toolkit's own version only; an error is reported as one of a fixed list of class names (`OtherError` otherwise). Each event also asks the receiving service not to look up a location.
+
 ## [1.1.0] — 2026-10-12
 
 ### Added

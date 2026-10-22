@@ -667,6 +667,48 @@ describe('app', () => {
       assert.equal(r.headers.get('referrer-policy'), 'same-origin');
     });
 
+    it('no UI page reads document.cookie, and every page carries the token in a meta tag', async () => {
+      const { notify } = await import('../src/jobs/index.js');
+      notify(null, 'disk', 'csrf-test-render', { mb: 1 });
+      const sid = listSites()[0].id;
+      const paths = ['/setup', '/sites', '/sites/new', `/sites/${sid}/edit`, `/sites/${sid}/install`, `/sites/${sid}`, `/sites/${sid}/uploads`, `/sites/${sid}/analyse`, '/settings', '/about', '/docs/getting-started'];
+      for (const path of paths) {
+        const r = await req(path);
+        assert.equal(r.status, 200, path);
+        const html = await r.text();
+        assert.ok(!html.includes('document.cookie'), `${path} reads document.cookie`);
+        assert.ok(html.includes(`<meta name="csrf-token" content="${CSRF_SECRET}"`), `${path} has no csrf meta`);
+      }
+    });
+
+    it('a notification can be dismissed with the token the page carries', async () => {
+      const { notify, activeNotifications } = await import('../src/jobs/index.js');
+      notify(null, 'disk', 'csrf-test-dismiss', { mb: 2 });
+      const html = await (await req('/about')).text();
+      assert.match(html, /querySelector\('meta\[name=csrf-token\]'\)/);
+      const token = /<meta name="csrf-token" content="([^"]+)"/.exec(html)![1];
+      const id = activeNotifications(null).find((x) => x.kind === 'disk')!.id;
+      const r = await raw(`/api/notifications/${id}/dismiss`, '127.0.0.1:8080', { method: 'POST', headers: { origin: BASE, cookie: `smb_csrf=${CSRF_SECRET}`, 'x-csrf': token } });
+      assert.ok(r.status < 400, String(r.status));
+      assert.ok(!activeNotifications(null).some((x) => x.id === id));
+    });
+
+    it('Origin must match scheme and port, not only the host', async () => {
+      for (const origin of ['https://127.0.0.1:8080', 'https://localhost:8080']) {
+        assert.equal((await post('/api/sites', { origin }, { name: 'Shop', host: 'scheme.shop.test' })).status, 403, origin);
+      }
+      config.uiUrl = 'https://ui.example.com';
+      const ui = (origin: string) => raw('/api/sites', 'ui.example.com', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin, cookie: `smb_csrf=${CSRF_SECRET}` }, body: formBody({ _csrf: CSRF_SECRET, name: 'Shop', host: 'scheme2.shop.test' }) });
+      assert.equal((await ui('http://ui.example.com')).status, 403);
+      assert.ok((await ui('https://ui.example.com:443')).status < 400);
+    });
+
+    it('an unparsable SMB_UI_URL is ignored (loopback only)', async () => {
+      config.uiUrl = 'not a url';
+      assert.equal((await raw('/about', '127.0.0.1:8080')).status, 200);
+      assert.equal((await raw('/about', 'ui.example.com')).status, 421);
+    });
+
     it('forms carry the token from the server', async () => {
       const html = await (await req('/sites/new')).text();
       assert.ok(html.includes(`name="_csrf" value="${CSRF_SECRET}"`));

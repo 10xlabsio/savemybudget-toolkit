@@ -94,7 +94,7 @@ ui.example.com {
 }
 ```
 
-Then tell the toolkit that address, or it will refuse the requests with `421`: set `SMB_UI_URL=https://ui.example.com` in the toolkit's environment and restart. The proxy must pass the original `Host` header through (Caddy does by default). A server's IP address or any other name you open the UI by needs the same setting.
+Then tell the toolkit that address, or it will refuse the requests with `421`: set `SMB_UI_URL=https://ui.example.com` in the toolkit's environment and restart. The proxy must pass the original `Host` header through (Caddy does by default). A server's IP address or any other name you open the UI by needs the same setting, and so does a different local port (an SSH tunnel to another port, or a Compose port mapping such as `9090:8080`): set `SMB_UI_URL=http://localhost:9090`.
 
 ## Behind your own reverse proxy
 

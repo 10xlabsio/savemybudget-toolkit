@@ -70,17 +70,31 @@ const UI_EXEMPT_FROM_SETUP = (path: string) =>
 /** Drops the default port so "host" and "host:443" compare equal. */
 const normHost = (h: string) => h.toLowerCase().replace(/:(80|443)$/, '');
 
+const isLoopback = (h: string) => { const p = config.port; return h === normHost(`127.0.0.1:${p}`) || h === normHost(`localhost:${p}`) || h === normHost(`[::1]:${p}`); };
+
+/** The origin of SMB_UI_URL (default ports normalised by URL), or null when unset or unparsable. */
+function uiOrigin(): string | null {
+  if (!config.uiUrl) return null;
+  try { return new URL(config.uiUrl).origin; } catch { return null; }
+}
+
 /** Host values the UI answers to: loopback on the listening port, plus the host of SMB_UI_URL when set. Environment only; nothing editable in the UI feeds this list. */
 function hostAllowed(host: string | undefined): boolean {
   if (!host) return false;
   const h = normHost(host);
-  const p = config.port;
-  if (h === normHost(`127.0.0.1:${p}`) || h === normHost(`localhost:${p}`) || h === normHost(`[::1]:${p}`)) return true;
-  if (config.uiUrl) {
-    try { if (h === normHost(new URL(config.uiUrl).host)) return true; } catch { /* unparsable SMB_UI_URL: loopback only */ }
-  }
-  return false;
+  if (isLoopback(h)) return true;
+  const o = uiOrigin();
+  return o !== null && h === normHost(new URL(o).host);
 }
+
+/** A request's Origin/Referer must be exactly one of our origins: scheme and host[:port], not only the host. */
+function originAllowed(u: URL): boolean {
+  if (!hostAllowed(u.host)) return false;
+  if (u.protocol === 'http:' && isLoopback(normHost(u.host))) return true;
+  return u.origin === uiOrigin();
+}
+
+if (config.uiUrl && !uiOrigin()) console.warn(`SMB_UI_URL is set but is not a valid URL ("${config.uiUrl}"), so it is ignored: the web UI answers only on 127.0.0.1, localhost and [::1] on port ${config.port}. Use a full address such as https://ui.example.com.`);
 
 app.use('*', async (c, next) => {
   // Requests for a Host that is not one of ours get 421 before any handler, cookie or token.
@@ -132,9 +146,9 @@ async function csrfProblem(c: Ctx): Promise<string | null> {
   const origin = c.req.header('origin');
   const source = origin !== undefined ? origin : c.req.header('referer');
   if (!source || source === 'null') return 'Cross-site request rejected (no usable Origin).';
-  let sourceHost: string;
-  try { sourceHost = new URL(source).host; } catch { return 'Cross-site request rejected (bad Origin).'; }
-  if (!hostAllowed(sourceHost)) return 'Cross-site request rejected (Origin is not this site).';
+  let sourceUrl: URL;
+  try { sourceUrl = new URL(source); } catch { return 'Cross-site request rejected (bad Origin).'; }
+  if (!originAllowed(sourceUrl)) return 'Cross-site request rejected (Origin is not this site).';
   const cookie = getCookie(c, CSRF_COOKIE);
   const header = c.req.header('x-csrf');
   let token = header;

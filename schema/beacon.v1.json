@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/10xlabsio/savemybudget-sdk/schema/beacon.v1.json",
+  "$id": "https://github.com/10xlabsio/savemybudget-toolkit/schema/beacon.v1.json",
   "title": "SaveMyBudget SDK beacon payload v1",
   "description": "Mirrors src/types.ts BeaconPayload in the SDK repo. Posted as text/plain JSON to <endpoint>/v1/beacon.",
   "type": "object",

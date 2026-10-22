@@ -10,7 +10,7 @@ SaveMyBudget extends Google's own invalid-traffic protection; it does not replac
 
 ## What you get
 
-- **The tag** — the open-source [SaveMyBudget SDK](https://github.com/10xlabsio/savemybudget-sdk) (MIT, under 3 KB, no dependencies), pointed at your own collector. It never contacts SaveMyBudget.
+- **The tag** — a small script (under 3 KB, no dependencies) that your toolkit serves at `/sdk/v1/smb.js`, pointed at your own collector. It never contacts SaveMyBudget.
 - **The collector** — receives beacons, enriches them offline (network type, country, browser), stores them in SQLite for the claim window.
 - **Log and CSV import** — bring your own web server logs or a click export instead of, or as well as, the tag. [Template included](templates/click-log-template.csv).
 - **Ten detection rules** with documented defaults. [Read them](docs/rules.md).

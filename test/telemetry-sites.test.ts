@@ -36,7 +36,7 @@ const formBody = (o: Record<string, string>) => new URLSearchParams(o).toString(
 function req(path: string, init: RequestInit & { csrf?: boolean; auth?: string } = {}) {
   const headers = new Headers(init.headers ?? {});
   headers.set('host', '127.0.0.1:8080');
-  if (init.csrf) { headers.set('cookie', `smb_csrf=${CSRF_SECRET}`); headers.set('x-csrf', CSRF_SECRET); }
+  if (init.csrf) { headers.set('cookie', `smb_csrf=${CSRF_SECRET}`); headers.set('x-csrf', CSRF_SECRET); headers.set('origin', BASE); }
   if (init.auth) headers.set('authorization', `Bearer ${init.auth}`);
   return app.fetch(new Request(BASE + path, { ...init, headers, redirect: 'manual' }), { incoming: { socket: { remoteAddress: '203.0.113.50' } } } as any) as Promise<Response>;
 }

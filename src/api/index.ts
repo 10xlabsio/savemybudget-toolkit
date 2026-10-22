@@ -473,7 +473,7 @@ api.get('/export', (c) => {
 api.notFound((c) => c.json({ error: 'Not found.' }, 404));
 api.onError((err, c) => {
   log('api error', err);
-  telemetry.track('error', { stage: 'write', error_class: err.name.slice(0, 64) });
+  telemetry.track('error', { stage: 'write', error_class: telemetry.errorClassOf(err) });
   return c.json({ error: 'Something went wrong on the server. The log has the details.' }, 500);
 });
 

@@ -8,8 +8,9 @@ import { join } from 'node:path';
 
 process.env.SMB_DATA_DIR = mkdtempSync(join(tmpdir(), 'smb-telemetry-'));
 
-const { payload, ALLOWED, RULE_IDS, bucket, bucketRules, hoursBucket, windowDaysFor, nodeMajor } = await import('../src/telemetry/index.js');
+const { payload, ALLOWED, RULE_IDS, ERROR_CLASSES, errorClassOf, bucket, bucketRules, hoursBucket, windowDaysFor, nodeMajor } = await import('../src/telemetry/index.js');
 const { RULES } = await import('../src/rules/index.js');
+const { config } = await import('../src/config.js');
 type EventName = import('../src/telemetry/index.js').EventName;
 
 const INSTANCE = '3f2b8c1e-5d4a-4e7b-9c6d-1a2b3c4d5e6f';
@@ -92,5 +93,135 @@ describe('telemetry payload allow-list', () => {
     for (const table of ['events', 'verdicts', 'analyses', 'packages', 'uploads', 'leads', 'ads_']) {
       assert.doesNotMatch(code, new RegExp(`\\b${table}`, 'i'), table);
     }
+  });
+});
+
+
+describe('telemetry version and instance id', () => {
+  const odd = ['1.1.0-203.0.113.7', '1.1.0-shop.example.com', '0-1234567890', '1.1.0+meta', '1.1.0\n', '1.1.1', '192.168.1', '9.9.9', ''];
+  for (const v of odd) {
+    it(`refuses version ${JSON.stringify(v)} in the field and as the toolkit version`, () => {
+      assert.throws(() => build('instance_started', { version: v }), /telemetry/);
+      assert.throws(() => payload('first_beacon', {}, INSTANCE, v), /toolkit version/);
+    });
+  }
+  it('accepts only this install\'s own version', () => {
+    assert.equal(config.version, '1.1.0');
+    assert.equal(payload('first_beacon', {}, INSTANCE, config.version).properties.toolkit_version, config.version);
+  });
+  for (const id of ['', 'not-a-uuid', '203.0.113.7', '1234567890', 'shop.example.com', INSTANCE + 'x', INSTANCE + '\n']) {
+    it(`refuses instance id ${JSON.stringify(id)}`, () => {
+      assert.throws(() => payload('first_beacon', {}, id, '1.1.0'), /UUID/);
+    });
+  }
+});
+
+describe('telemetry frozen tables and rule list', () => {
+  it('RULE_IDS equals the shipped rules, sorted', () => {
+    assert.deepEqual([...RULE_IDS].sort(), RULES.map((r: { id: string }) => r.id).sort());
+  });
+  it('ALLOWED, each event spec, RULE_IDS and ERROR_CLASSES are frozen', () => {
+    assert.ok(Object.isFrozen(ALLOWED));
+    for (const [event, spec] of Object.entries(ALLOWED)) assert.ok(Object.isFrozen(spec), event);
+    assert.ok(Object.isFrozen(RULE_IDS));
+    assert.ok(Object.isFrozen(ERROR_CLASSES));
+    assert.throws(() => { (ALLOWED as any).extra = {}; }, TypeError);
+    assert.throws(() => { (ALLOWED.heartbeat as any).host = () => 'x'; }, TypeError);
+    assert.throws(() => { (ALLOWED.heartbeat as any).sites = () => 'x'; }, TypeError);
+    assert.throws(() => { (RULE_IDS as any).push('x'); }, TypeError);
+    assert.throws(() => { (ERROR_CLASSES as any).push('x'); }, TypeError);
+  });
+});
+
+describe('telemetry rule counts', () => {
+  const rulesOf = (rules: unknown) => build('analysis_run', { rules });
+  it('refuses keys that merely look like rule ids or encode an address', () => {
+    for (const k of ['r1_203_0_113_7', 'r1_hosting_asn ', 'R1_HOSTING_ASN', '203_0_113_7', 'r99_x', 'toJSON', 'constructor']) {
+      assert.throws(() => rulesOf({ [k]: '0' }), /telemetry/, k);
+    }
+    assert.throws(() => rulesOf(JSON.parse('{"__proto__":{"r1_hosting_asn":"0"}}')), /telemetry/);
+  });
+  it('refuses a URL object, a null-prototype object, an array, a Map, a class instance and primitives', () => {
+    class Counts { r1_hosting_asn = '0'; }
+    const nullProto = Object.assign(Object.create(null), { r1_hosting_asn: '0' });
+    for (const v of [new URL('https://shop.example.com/?gclid=abc'), nullProto, ['0'], new Map([['r1_hosting_asn', '0']]), new Counts(), 'r1_hosting_asn', 7, null, undefined, () => ({})]) {
+      assert.throws(() => rulesOf(v), /telemetry/);
+    }
+  });
+  it('refuses an own toJSON and never lets a function through', () => {
+    assert.throws(() => rulesOf({ r1_hosting_asn: '0', toJSON: () => ({ ip: '203.0.113.7' }) }), /telemetry/);
+    assert.throws(() => rulesOf({ r1_hosting_asn: () => '0' }), /telemetry/);
+  });
+  it('reads a getter once and sends the value it checked', () => {
+    let reads = 0;
+    const rules = { get r1_hosting_asn() { reads++; return reads === 1 ? '<1k' : '203.0.113.7'; } };
+    const p = rulesOf(rules);
+    assert.equal(reads, 1);
+    assert.deepEqual(p.properties.rules, { r1_hosting_asn: '<1k' });
+    assert.doesNotMatch(JSON.stringify(p), /203\.0\.113/);
+    assert.equal(reads, 1);
+  });
+  it('sends a copy: changing the input afterwards does not change the payload', () => {
+    const rules: Record<string, string> = { r1_hosting_asn: '0' };
+    const p = rulesOf(rules);
+    rules.r1_hosting_asn = '203.0.113.7';
+    rules.r3_geo = '>100k';
+    assert.deepEqual(p.properties.rules, { r1_hosting_asn: '0' });
+    assert.doesNotMatch(JSON.stringify(p), /203\.0\.113/);
+  });
+});
+
+describe('a packed IPv4 address (16909060) in every field of every event', () => {
+  const forms: unknown[] = [16909060, '16909060', -16909060, '-16909060', 16909060.5, '0x1020304', ' 16909060'];
+  for (const [event, spec] of Object.entries(ALLOWED)) {
+    for (const key of Object.keys(spec)) {
+      it(`${event}.${key} refuses it`, () => {
+        for (const v of forms) {
+          assert.throws(() => build(event as EventName, { [key]: v }), /telemetry/, `${event}.${key} = ${String(v)}`);
+        }
+      });
+    }
+  }
+  it('refuses it as a rule count', () => {
+    for (const v of forms) assert.throws(() => build('analysis_run', { rules: { r1_hosting_asn: v } }), /telemetry/);
+  });
+});
+
+describe('telemetry error class', () => {
+  it('maps to the fixed list with an OtherError fallback', () => {
+    assert.equal(errorClassOf(new TypeError('x')), 'TypeError');
+    class ShopExampleComError extends Error { override name = 'ShopExampleComError'; }
+    assert.equal(errorClassOf(new ShopExampleComError('x')), 'OtherError');
+    const e = new Error('x'); e.name = '203.0.113.7Error';
+    assert.equal(errorClassOf(e), 'OtherError');
+    assert.equal(errorClassOf('boom'), 'OtherError');
+    assert.equal(errorClassOf(null), 'OtherError');
+  });
+  it('refuses a class name outside the list', () => {
+    assert.throws(() => build('error', { error_class: 'ShopExampleComError' }), /telemetry/);
+    assert.throws(() => build('error', { error_class: '203.0.113.7Error' }), /telemetry/);
+    assert.doesNotThrow(() => build('error', { error_class: 'OtherError' }));
+  });
+});
+
+describe('telemetry helpers', () => {
+  it('bucket', () => {
+    assert.deepEqual([-5, 0, 1, 999, 1000, 9999, 10000, 99999, 100000, 1e9].map(bucket), ['0', '0', '<1k', '<1k', '1k-10k', '1k-10k', '10k-100k', '10k-100k', '>100k', '>100k']);
+  });
+  it('bucketRules turns every count into a label and keeps the keys', () => {
+    assert.deepEqual(bucketRules({ r1_hosting_asn: 0, r3_geo: 12, r13_gclid_replay: 25000 }), { r1_hosting_asn: '0', r3_geo: '<1k', r13_gclid_replay: '10k-100k' });
+    assert.deepEqual(bucketRules({}), {});
+  });
+  it('hoursBucket', () => {
+    assert.deepEqual([NaN, -1, 0, 0.5, 1, 23.9, 24, 167, 168, 719, 720, 5000].map(hoursBucket), ['<1h', '<1h', '<1h', '<1h', '1-24h', '1-24h', '1-7d', '1-7d', '7-30d', '7-30d', '>30d', '>30d']);
+  });
+  it('windowDaysFor rounds, floors at 0 and caps at 366', () => {
+    assert.deepEqual([7, 7.4, 7.6, -3, NaN, Infinity, 366, 367, 100000].map(windowDaysFor), [7, 7, 8, 0, 0, 0, 366, 366, 366]);
+  });
+  it('nodeMajor keeps the major version only', () => {
+    assert.equal(nodeMajor('v22.3.1'), 22);
+    assert.equal(nodeMajor('v18.0.0-nightly2022'), 18);
+    assert.equal(nodeMajor('20.1.0'), 20);
+    assert.equal(nodeMajor(), Number.parseInt(process.versions.node, 10));
   });
 });

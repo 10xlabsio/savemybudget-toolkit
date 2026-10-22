@@ -17,7 +17,7 @@ The first time the toolkit starts it prints one line saying telemetry is on and 
 ## Two things that always hold
 
 1. **The tag on your website never contacts SaveMyBudget.** Telemetry goes from your server to ours; nothing runs in your visitors' browsers except the SDK talking to your own collector. Read the snippet — there is no SaveMyBudget hostname in it.
-2. **Telemetry and click data never share code.** The telemetry module cannot read the events table. Its payload builder is a pure function with a fixed list of fields per event, and each field accepts only a set value, a bucket, a yes/no flag or a small count in a fixed range. Anything else is refused, not trimmed, so an identifier can't slip through by accident. Tests feed it customer IDs, IP addresses, click IDs, email addresses, domains and URLs and check that every one is rejected.
+2. **Telemetry and click data never share code.** The telemetry module does not read the events table; a test checks this. Its payload builder is a pure function with a fixed list of fields per event, and each field accepts only a set value, a bucket, a yes/no flag or a small count in a fixed range. Anything else is refused, not trimmed, so an identifier can't slip through by accident. Tests feed it customer IDs, IP addresses, click IDs, email addresses, domains and URLs and check that every one is rejected.
 
 ## What is sent
 

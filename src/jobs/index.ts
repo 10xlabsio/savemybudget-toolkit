@@ -167,7 +167,7 @@ export async function dailyTick(nowDate = new Date()) {
     telemetry.track('heartbeat', {
       beacons_per_day: telemetry.bucket(b.n),
       distinct_gclids: telemetry.bucket(b.g),
-      sites: sites.n,
+      sites: Math.min(sites.n, 1000),
       imports_used: uploads.n > 0,
       store_size: telemetry.mbBucket(storeSizeMb()),
       uptime_hours: telemetry.hoursBucket(process.uptime() / 3600),

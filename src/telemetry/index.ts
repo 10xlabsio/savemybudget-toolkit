@@ -97,8 +97,19 @@ const bool: Check = (v) => (typeof v === 'boolean' ? v : NO);
 /** Whole number inside a realistic range, so a packed address or a 10-digit ID cannot pass as a count. */
 const count = (min: number, max: number): Check => (v) => (typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max ? v : NO);
 const PLAIN_VERSION = /^\d{1,3}\.\d{1,3}\.\d{1,3}(-(alpha|beta|rc)\.\d{1,3})?$/;
-const versionString: Check = (v) => (typeof v === 'string' && (PLAIN_VERSION.test(v) || v === config.version) ? v : NO);
-const errorClass: Check = (v) => (typeof v === 'string' && /^[A-Za-z]{0,32}Error$/.test(v) ? v : NO);
+/** Only this install's own version string goes on the wire, never a value passed in. */
+const versionString: Check = (v) => (typeof v === 'string' && v === config.version && PLAIN_VERSION.test(v) ? v : NO);
+/** Built-in error class names; anything else is reported as `OtherError`. */
+export const ERROR_CLASSES: readonly string[] = Object.freeze([
+  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError',
+  'AggregateError', 'SqliteError', 'AbortError', 'TimeoutError', 'OtherError',
+]);
+/** Maps whatever was thrown to a name from the fixed list. */
+export function errorClassOf(err: unknown): string {
+  const name = err instanceof Error ? err.name : '';
+  return ERROR_CLASSES.includes(name) ? name : 'OtherError';
+}
+const errorClass: Check = oneOf(...ERROR_CLASSES);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const BUCKETS = ['0', '<1k', '1k-10k', '10k-100k', '>100k'] as const;
@@ -107,7 +118,7 @@ const SHARE = oneOf('0', '<5%', '5-20%', '>20%');
 const SIZE = oneOf('<100MB', '100MB-1GB', '1-5GB', '>5GB');
 const HOURS = oneOf('<1h', '1-24h', '1-7d', '7-30d', '>30d');
 
-/** The detection rules the toolkit ships. A test pins this list to the rules module, which this module never imports. */
+/** The detection rules the toolkit ships. `test/telemetry.test.ts` pins this list to the rules module, which this module never imports. */
 export const RULE_IDS: readonly string[] = Object.freeze([
   'r1_hosting_asn', 'r3_geo', 'r4_subnet_cluster', 'r6_automation', 'r8_fp_collision',
   'r9_no_beacon', 'r10_zero_dwell', 'r11_dead_session', 'r13_gclid_replay', 'r14_ip_velocity',
@@ -195,10 +206,15 @@ export function payload(event: EventName, props: Props, instance: string, versio
 let sending = false;
 export function track(event: EventName, props: Props = {}) {
   if (!enabled()) return;
+  let body: string;
   try {
-    const body = JSON.stringify(payload(event, props, instanceId(), config.version));
-    if (sending && event === 'heartbeat') return;
-    sending = true;
+    body = JSON.stringify(payload(event, props, instanceId(), config.version));
+  } catch {
+    return; // refused: nothing is sent, and the in-flight flag belongs to the send that set it
+  }
+  if (sending && event === 'heartbeat') return;
+  sending = true;
+  try {
     fetch(`${config.posthogHost}/capture/`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

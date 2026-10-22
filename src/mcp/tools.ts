@@ -523,7 +523,7 @@ export const TOOLS: ToolDef[] = [
       const id = saveAnalysis(site, result);
       const s = result.summary;
       telemetry.track('analysis_run', {
-        rules: s.rules, flagged_share: telemetry.shareBucket(s.counts.total ? s.counts.flag / s.counts.total : 0), window_days: w.days,
+        rules: telemetry.bucketRules(s.rules), flagged_share: telemetry.shareBucket(s.counts.total ? s.counts.flag / s.counts.total : 0), window_days: telemetry.windowDaysFor(w.days),
         sources_beacon: s.counts.sources.beacon > 0, sources_log: s.counts.sources.log > 0, sources_csv: s.counts.sources.csv > 0, via: 'mcp',
       });
       return { ...envelope(site, undefined, w), analysis_id: id, reused: false, ran_at: s.ran_at, sources: s.counts.sources, ...(check.warning ? { warning: check.warning } : {}), ...summaryShape(s) };

@@ -10,6 +10,17 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Upgrading an existing database first checks for free space and writes a fresh `backup-v1-<timestamp>.sqlite` (owner-only); with too little room it stops and changes nothing. The copy is deleted automatically once the retention period has passed, and Settings shows a notice while it exists.
 - The data directory and everything in it is owner-only (`0700` folders, `0600` files), and existing files are tightened at start.
 
+## [1.1.1] — 2026-10-22
+
+### Security
+- The web UI now answers only to its own addresses: `127.0.0.1`, `localhost` and `[::1]` on the listening port, plus the host of the new `SMB_UI_URL` setting if you set it. Any other host name gets `421`. If you reach the UI by another name, such as a proxy address or a server's IP, set `SMB_UI_URL` to it (see Exposing the UI in the configuration docs).
+- State-changing requests from the UI must now carry a same-site `Origin` (or `Referer`); requests without one, or with `Origin: null`, are refused with `403`.
+- The form token cookie is now `HttpOnly`.
+
+### Fixed
+- Telemetry payloads are checked against a fixed list of fields per event, each limited to a set value, bucket, flag or small count. Previously only long strings were refused, so an identifier such as an ID, address, click ID, email or hostname could have been sent if code ever passed one. Anything outside the list is now refused and the event is dropped. [TELEMETRY.md](TELEMETRY.md) is updated.
+- Telemetry wire format, as a result of that check: Node is sent as its major version only; durations (uptime, hours since install), counters and per-rule counts are sent as bucket labels; the site count is capped at 1000; the version is the toolkit's own version only; an error is reported as one of a fixed list of class names (`OtherError` otherwise). Each event also asks the receiving service not to look up a location.
+
 ## [1.1.0] — 2026-10-12
 
 ### Added

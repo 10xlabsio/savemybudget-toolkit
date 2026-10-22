@@ -6,7 +6,7 @@ import { siteHealth, type Health } from '../db.js';
 import { silentThresholdHours, type Notification } from '../jobs/index.js';
 import { RULES } from '../rules/index.js';
 import type { Site } from '../types.js';
-import { relTime, fmtDay, n, displayHost } from '../ui.js';
+import { relTime, fmtDay, n, displayHost, CSRF_SECRET } from '../ui.js';
 
 export const CSS = `
 :root{--bg:#f6f6f8;--panel:#fff;--ink:#1B1B2F;--muted:#5d5c72;--line:#e3e2ea;--brand:#7A9A12;--brandname:#1B1B2F;--lav:#ece9f7;--lav-ink:#4a4470;
@@ -103,6 +103,7 @@ export function Layout(p: LayoutProps) {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="light dark" />
+        <meta name="csrf-token" content={CSRF_SECRET} />
         <title>{p.title} · SaveMyBudget Toolkit</title>
         <style dangerouslySetInnerHTML={{ __html: CSS }} />
       </head>
@@ -181,7 +182,7 @@ function notificationCopy(nt: Notification, site: Site | undefined): { tone: str
 
 export function Notifications({ items, sites, nonce }: { items: Notification[]; sites: Site[]; nonce: string }) {
   const byId = new Map(sites.map((s) => [s.id, s]));
-  const js = `document.querySelectorAll('.note .x').forEach(function(b){b.addEventListener('click',function(){var id=b.getAttribute('data-id');var el=b.closest('.note');el.classList.add('hide');fetch('/api/notifications/'+id+'/dismiss',{method:'POST',headers:{'x-csrf':(document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}}).catch(function(){});});});`;
+  const js = `document.querySelectorAll('.note .x').forEach(function(b){b.addEventListener('click',function(){var id=b.getAttribute('data-id');var el=b.closest('.note');el.classList.add('hide');fetch('/api/notifications/'+id+'/dismiss',{method:'POST',headers:{'x-csrf':(document.querySelector('meta[name=csrf-token]')||{}).content||''}}).catch(function(){});});});`;
   return (
     <div>
       {items.map((nt) => {

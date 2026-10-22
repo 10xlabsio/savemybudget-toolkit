@@ -15,7 +15,7 @@ export function UploadsPage(p: UploadsProps) {
   const js = `(function(){
 var SITE=${p.site.id};
 function $(id){return document.getElementById(id)}
-function csrf(){return (document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}
+function csrf(){return ${JSON.stringify(p.csrf)}}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 var form=$('upform'),out=$('preview'),token=null,mapping=null;
 form.addEventListener('submit',function(ev){ev.preventDefault();send(false)});

@@ -12,7 +12,7 @@ export interface SetupProps {
 
 export function SetupPage(p: SetupProps) {
   const check = `(function(){var b=document.getElementById('chk'),o=document.getElementById('chkout'),u=document.getElementById('public_url');
-function csrf(){return (document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}
+function csrf(){return ${JSON.stringify(p.csrf)}}
 b.addEventListener('click',function(){o.textContent='Checking…';
 fetch('/api/setup/check',{method:'POST',headers:{'x-csrf':csrf(),'content-type':'application/json'},body:JSON.stringify({url:u.value})}).then(function(r){return r.json()}).then(function(j){
 o.textContent=j.ok?'✓ Reachable — the collector answered at '+j.url+(j.warning?' — '+j.warning:''):'✗ '+(j.reason||j.error||'The check could not run.');

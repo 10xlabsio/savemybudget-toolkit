@@ -73,8 +73,8 @@ export function runMigrations(d: DatabaseSync, opts: MigrateOptions = {}): void 
   if (!pending.length) return;
 
   const taken = hadData && opts.dbPath && pending.some((m) => m.backupFirst) ? backupBeforeUpgrade(d, opts.dbPath, opts) : null;
-  // Migrations before the first one that needs the copy only create bookkeeping (the 1.x baseline on a 1.x file); they do not count as a change.
-  const guardId = Math.min(...pending.filter((m) => m.backupFirst).map((m) => m.id));
+  // Whether this run changed the file. The 1.x baseline on a file that already holds 1.x data changes nothing
+  // (its statements are all IF NOT EXISTS); every other migration that commits does, and then the copy is kept.
   let committed = 0;
 
   d.exec('CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
@@ -84,7 +84,7 @@ export function runMigrations(d: DatabaseSync, opts: MigrateOptions = {}): void 
       m.up(d);
       d.prepare('INSERT INTO _migrations(id, name, applied_at) VALUES(?, ?, ?)').run(m.id, m.name, new Date().toISOString());
       d.exec('COMMIT');
-      if (m.id >= guardId) committed++;
+      if (!(hadData && m.id === baseline.id)) committed++;
     } catch (err) {
       // SQLite may already have rolled back (a full disk does); a failing ROLLBACK must not hide the real error.
       if (d.isTransaction) { try { d.exec('ROLLBACK'); } catch { /* the original error matters more */ } }

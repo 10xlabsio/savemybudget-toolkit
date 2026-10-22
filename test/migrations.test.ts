@@ -185,6 +185,47 @@ describe('migrations', () => {
     }
     assert.equal(count(d, 'audit_log'), 1);
   });
+
+  it('the audit log checks every byte: a NUL, an escape or a non-ASCII byte cannot hide text after a valid prefix', () => {
+    const d = new DatabaseSync(':memory:');
+    runMigrations(d);
+    const put = (action: unknown, counts: unknown = '{}') => d.prepare('INSERT INTO audit_log(at, action, counts) VALUES (1, ?, ?)').run(action as string, counts as string);
+    assert.throws(() => put('erase\u0000 1.2.3.4 visitor@example.com'), /audit_log action/);
+    assert.throws(() => put('ok', '{"rows\\u0000 1.2.3.4":1}'), /audit_log counts/);
+    assert.throws(() => put('ok', '{"rows":1}\u0000{"x 1.2.3.4":"y"}'), /audit_log counts/);
+    assert.throws(() => put('ok', '{"\\u0061b":1}'), /audit_log counts/);
+    assert.throws(() => put('ok', '{"é":1}'), /audit_log counts/);
+    assert.throws(() => put(new Uint8Array([0x61, 0x62])), /audit_log action/);
+    assert.throws(() => put('ok', new Uint8Array([0x7b, 0x7d])), /audit_log counts/);
+    assert.throws(() => put(12345), /audit_log action/);
+    // Every byte other than a-z and _, raw (so possibly invalid UTF-8) and between valid letters, in both columns.
+    for (let b = 0; b < 256; b++) {
+      const c = String.fromCharCode(b);
+      if ((c >= 'a' && c <= 'z') || c === '_') continue;
+      const h = b.toString(16).padStart(2, '0');
+      assert.throws(() => d.exec(`INSERT INTO audit_log(at, action) VALUES (1, CAST(x'61${h}62' AS TEXT))`), /audit_log action/, `action byte ${h}`);
+      assert.throws(() => d.exec(`INSERT INTO audit_log(at, action, counts) VALUES (1, 'x', CAST(x'7b2261${h}62223a317d' AS TEXT))`), /audit_log counts/, `counts byte ${h}`);
+    }
+    for (const seq of ['c080', 'e08080', 'f4908080', 'c3a9']) {
+      assert.throws(() => d.exec(`INSERT INTO audit_log(at, action) VALUES (1, CAST(x'61${seq}62' AS TEXT))`), /audit_log action/, seq);
+      assert.throws(() => d.exec(`INSERT INTO audit_log(at, action, counts) VALUES (1, 'x', CAST(x'7b2261${seq}62223a317d' AS TEXT))`), /audit_log counts/, seq);
+    }
+    put('a'.repeat(64), '{"rows":1}');
+    assert.equal(count(d, 'audit_log'), 1);
+  });
+
+  it('the audit log time and site are numbers, so neither can carry text', () => {
+    const d = new DatabaseSync(':memory:');
+    runMigrations(d);
+    const put = (at: unknown, site: unknown) => d.prepare("INSERT INTO audit_log(at, site_id, action) VALUES (?, ?, 'x')").run(at as number, site as number);
+    put(1792658162481, null);
+    put(1792658162481, 3);
+    put('1792658162481', '3'); // numeric text is stored as the integer
+    for (const [at, site] of [['visitor@example.com', null], [1.5, null], [1, '1.2.3.4'], [1, 2.5], [new Uint8Array([1]), null], [1, new Uint8Array([1])]]) {
+      assert.throws(() => put(at, site), /audit_log/, JSON.stringify([at, site]));
+    }
+    assert.deepEqual(d.prepare('SELECT DISTINCT typeof(at) a, typeof(site_id) s FROM audit_log ORDER BY s').all().map((r) => ({ ...r })), [{ a: 'integer', s: 'integer' }, { a: 'integer', s: 'null' }]);
+  });
 });
 
 describe('crash loop', () => {
@@ -218,6 +259,36 @@ describe('crash loop', () => {
     assert.throws(() => runMigrations(d, { dbPath: path, migrations: [baseline, ok, bad], stamp: () => 'B' }), /boom/);
     d.close();
     assert.equal(listBackups(dir).length, 2);
+  });
+
+  it('a migration that commits before a failing backupFirst one counts as a change, so the copy is kept', () => {
+    const dir = tmp();
+    const path = makeV1File(dir);
+    let d = new DatabaseSync(path);
+    runMigrations(d, { dbPath: path, stamp: () => 'A' }); // a 2.x file: 1 and 2 applied
+    d.close();
+    for (const b of listBackups(dir)) rmSync(join(dir, b.name));
+    const real = { id: 3, name: 'real', up(x: DatabaseSync) { x.exec('ALTER TABLE events RENAME TO events_v1'); } };
+    const fail = { id: 4, name: 'fail', backupFirst: true, up() { throw new Error('boom'); } };
+    d = new DatabaseSync(path);
+    assert.throws(() => runMigrations(d, { dbPath: path, migrations: [...MIGRATIONS, real, fail], stamp: () => 'B' }), /boom/);
+    assert.ok(tables(d).includes('events_v1'));
+    d.close();
+    assert.deepEqual(listBackups(dir).map((b) => b.name), ['backup-v1-B.sqlite']);
+    const copy = new DatabaseSync(join(dir, 'backup-v1-B.sqlite'));
+    assert.ok(tables(copy).includes('events') && !tables(copy).includes('events_v1'));
+    copy.close();
+  });
+
+  it('on a 1.x file, a migration other than the baseline that commits before a failing backupFirst one keeps the copy', () => {
+    const dir = tmp();
+    const path = makeV1File(dir);
+    const real = { id: 2, name: 'real', up(x: DatabaseSync) { x.exec('CREATE TABLE t (a)'); } };
+    const fail = { id: 3, name: 'fail', backupFirst: true, up() { throw new Error('boom'); } };
+    const d = new DatabaseSync(path);
+    assert.throws(() => runMigrations(d, { dbPath: path, migrations: [baseline, real, fail], stamp: () => 'C' }), /boom/);
+    d.close();
+    assert.deepEqual(listBackups(dir).map((b) => b.name), ['backup-v1-C.sqlite']);
   });
 });
 

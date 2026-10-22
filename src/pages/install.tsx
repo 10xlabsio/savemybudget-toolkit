@@ -66,7 +66,7 @@ export function InstallPage(p: InstallProps) {
 var SITE=${escJson({ id: p.site.id, host: p.site.host, name: p.site.name })},SNIPPET=${escJson(snippet ?? '')},PLATFORMS=${platformsJson},HAS=${p.hasBeacon ? 'true' : 'false'};
 var LS='smb_install_'+SITE.id;
 function $(id){return document.getElementById(id)}
-function csrf(){return (document.cookie.match(/(?:^|; )smb_csrf=([^;]+)/)||[])[1]||''}
+function csrf(){return ${escJson(p.csrf)}}
 var state={method:null,platform:null};
 try{var s=JSON.parse(localStorage.getItem(LS)||'null');if(s&&s.method){state=s}}catch(e){}
 function save(){try{localStorage.setItem(LS,JSON.stringify(state))}catch(e){}}

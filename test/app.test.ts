@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
-import { before, describe, it } from 'node:test';
+import { afterEach, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,7 @@ process.env.SMB_TELEMETRY = 'off';
 const { openMemoryDb, getSite, insertEvents, listSites } = await import('../src/db.js');
 const { app } = await import('../src/app.js');
 const { CSRF_SECRET } = await import('../src/ui.js');
+const { config } = await import('../src/config.js');
 const { generateFixture } = await import('../src/rules/fixtures.js');
 const { SDK_BUILD } = await import('../src/pages/install.js');
 
@@ -26,6 +27,7 @@ function req(path: string, init: RequestInit & { csrf?: boolean; ip?: string } =
   if (init.csrf) {
     headers.set('cookie', `smb_csrf=${CSRF_SECRET}`);
     headers.set('x-csrf', CSRF_SECRET);
+    if (!headers.has('origin')) headers.set('origin', BASE);
   }
   const r = new Request(BASE + path, { ...init, headers, redirect: 'manual' });
   return app.fetch(r, { incoming: { socket: { remoteAddress: init.ip ?? '203.0.113.10' } } } as any);
@@ -542,5 +544,174 @@ describe('app', () => {
     const s = await req('/sites');
     assert.equal(s.status, 200);
     assert.ok((await s.text()).includes('www.shop.test'));
+  });
+  describe('Host allow-list and CSRF hardening', () => {
+    const raw = (path: string, host: string, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers ?? {});
+      headers.set('host', host);
+      return app.fetch(new Request(BASE + path, { ...init, headers, redirect: 'manual' }), { incoming: { socket: { remoteAddress: '203.0.113.10' } } } as any);
+    };
+    const UI_GETS = ['/', '/setup', '/sites', '/sites/new', '/settings', '/about', '/docs/getting-started', '/templates/click-log-template.csv'];
+    const post = (path: string, headers: Record<string, string>, body: Record<string, string> = {}) =>
+      raw(path, '127.0.0.1:8080', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `smb_csrf=${CSRF_SECRET}`, ...headers }, body: formBody({ _csrf: CSRF_SECRET, ...body }) });
+    afterEach(() => { config.uiUrl = ''; });
+
+    it('a foreign Host gets 421 on every UI route, with no cookie and no page', async () => {
+      for (const host of ['evil.example', 'evil.example:8080', '127.0.0.1', '127.0.0.1:9999', 'localhost.evil.example:8080', '203.0.113.5:8080']) {
+        for (const path of UI_GETS) {
+          const r = await raw(path, host);
+          assert.equal(r.status, 421, `${host} ${path}`);
+          assert.equal(r.headers.get('set-cookie'), null, `${host} ${path}`);
+          assert.ok(!(await r.text()).includes(CSRF_SECRET));
+        }
+        for (const path of ['/api/sites', '/api/setup/check', '/api/mcp/enable']) {
+          const r = await raw(path, host, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: `http://${host}`, cookie: `smb_csrf=${CSRF_SECRET}`, 'x-csrf': CSRF_SECRET }, body: formBody({ _csrf: CSRF_SECRET }) });
+          assert.equal(r.status, 421, `${host} POST ${path}`);
+          assert.equal(r.headers.get('set-cookie'), null);
+        }
+      }
+    });
+
+    it('a missing Host header is refused too', async () => {
+      const r = await app.fetch(new Request(BASE + '/sites'), { incoming: { socket: { remoteAddress: '203.0.113.10' } } } as any);
+      // The Request constructor supplies no Host header, so the UI sees none.
+      assert.equal(r.status, 421);
+    });
+
+    it('the 421 body names the setting for another address and nothing more', async () => {
+      const r = await raw('/about', 'evil.example');
+      const t = await r.text();
+      assert.match(t, /SMB_UI_URL/);
+      assert.ok(!t.includes('evil.example'));
+    });
+
+    it('loopback names on the listening port are served; the public URL host alone is not', async () => {
+      for (const host of ['127.0.0.1:8080', 'localhost:8080', 'LOCALHOST:8080', '[::1]:8080']) {
+        const r = await raw('/about', host);
+        assert.equal(r.status, 200, host);
+        assert.match(r.headers.get('set-cookie') ?? '', /smb_csrf=/, host);
+      }
+      assert.equal((await raw('/about', 't.shop.test')).status, 421);
+    });
+
+    it('SMB_UI_URL adds exactly its own host, and default ports are implicit', async () => {
+      config.uiUrl = 'https://ui.example.com';
+      assert.equal((await raw('/about', 'ui.example.com')).status, 200);
+      assert.equal((await raw('/about', 'ui.example.com:443')).status, 200);
+      assert.equal((await raw('/about', 'ui.example.com:8443')).status, 421);
+      assert.equal((await raw('/about', 't.shop.test')).status, 421);
+      config.uiUrl = 'http://ui.example.com';
+      assert.equal((await raw('/about', 'ui.example.com:80')).status, 200);
+      config.uiUrl = 'https://ui.example.com:8443';
+      assert.equal((await raw('/about', 'ui.example.com:8443')).status, 200);
+      assert.equal((await raw('/about', 'ui.example.com')).status, 421);
+    });
+
+    it('changing the public URL in Settings does not change which hosts are allowed', async () => {
+      const r = await req('/api/settings', { method: 'POST', csrf: true, headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: formBody({ _csrf: CSRF_SECRET, public_url: 'https://rebind.example.net' }) });
+      assert.ok(r.status < 400, String(r.status));
+      assert.equal((await raw('/about', 'rebind.example.net')).status, 421);
+      await req('/api/settings', { method: 'POST', csrf: true, headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: formBody({ _csrf: CSRF_SECRET, public_url: 'https://t.shop.test' }) });
+    });
+
+    it('a POST from the UI address works when Origin is that address', async () => {
+      config.uiUrl = 'https://ui.example.com';
+      const r = await raw('/api/sites', 'ui.example.com', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://ui.example.com', cookie: `smb_csrf=${CSRF_SECRET}` }, body: formBody({ _csrf: CSRF_SECRET, name: 'Shop', host: 'proxied.shop.test' }) });
+      assert.ok(r.status < 400, String(r.status));
+    });
+
+    it('the collector, SDK and health check do not depend on the UI Host list', async () => {
+      assert.equal((await raw('/healthz', 'anything.example')).status, 200);
+      assert.equal((await raw('/sdk/v1/smb.js', 'anything.example')).status, 200);
+    });
+
+    it('a POST from another origin fails even with the right token', async () => {
+      for (const origin of ['https://evil.example', 'http://localhost:8081', 'http://127.0.0.1:8080.evil.example']) {
+        const r = await post('/api/sites', { origin }, { name: 'Shop', host: 'cross.shop.test' });
+        assert.equal(r.status, 403, origin);
+      }
+      assert.ok(!listSites().some((s) => s.host === 'cross.shop.test'));
+    });
+
+    it('a POST with a referer from another origin fails', async () => {
+      const r = await post('/api/sites', { referer: 'https://evil.example/page' }, { name: 'Shop', host: 'cross2.shop.test' });
+      assert.equal(r.status, 403);
+    });
+
+    it('a POST with Origin "null" fails even with the right token', async () => {
+      const r = await post('/api/sites', { origin: 'null' }, { name: 'Shop', host: 'null.shop.test' });
+      assert.equal(r.status, 403);
+      assert.ok(!listSites().some((s) => s.host === 'null.shop.test'));
+    });
+
+    it('a POST with no Origin and no Referer fails even with the right token', async () => {
+      const r = await post('/api/sites', {}, { name: 'Shop', host: 'bare.shop.test' });
+      assert.equal(r.status, 403);
+      assert.ok(!listSites().some((s) => s.host === 'bare.shop.test'));
+    });
+
+    it('a POST with no Origin but a same-origin Referer works', async () => {
+      const r = await post('/api/sites', { referer: `${BASE}/sites/new` }, { name: 'Shop', host: 'ref.shop.test' });
+      assert.ok(r.status < 400, String(r.status));
+    });
+
+    it('a same-origin form post works', async () => {
+      const r = await post('/api/sites', { origin: BASE }, { name: 'Shop', host: 'same.shop.test' });
+      assert.ok(r.status < 400, String(r.status));
+      assert.ok(listSites().some((s) => s.host === 'same.shop.test'));
+    });
+
+    it('the cookie is HttpOnly and pages send a same-origin referrer policy', async () => {
+      const r = await raw('/about', '127.0.0.1:8080');
+      assert.match(r.headers.get('set-cookie') ?? '', /HttpOnly/i);
+      assert.equal(r.headers.get('referrer-policy'), 'same-origin');
+    });
+
+    it('no UI page reads document.cookie, and every page carries the token in a meta tag', async () => {
+      const { notify } = await import('../src/jobs/index.js');
+      notify(null, 'disk', 'csrf-test-render', { mb: 1 });
+      const sid = listSites()[0].id;
+      const paths = ['/setup', '/sites', '/sites/new', `/sites/${sid}/edit`, `/sites/${sid}/install`, `/sites/${sid}`, `/sites/${sid}/uploads`, `/sites/${sid}/analyse`, '/settings', '/about', '/docs/getting-started'];
+      for (const path of paths) {
+        const r = await req(path);
+        assert.equal(r.status, 200, path);
+        const html = await r.text();
+        assert.ok(!html.includes('document.cookie'), `${path} reads document.cookie`);
+        assert.ok(html.includes(`<meta name="csrf-token" content="${CSRF_SECRET}"`), `${path} has no csrf meta`);
+      }
+    });
+
+    it('a notification can be dismissed with the token the page carries', async () => {
+      const { notify, activeNotifications } = await import('../src/jobs/index.js');
+      notify(null, 'disk', 'csrf-test-dismiss', { mb: 2 });
+      const html = await (await req('/about')).text();
+      assert.match(html, /querySelector\('meta\[name=csrf-token\]'\)/);
+      const token = /<meta name="csrf-token" content="([^"]+)"/.exec(html)![1];
+      const id = activeNotifications(null).find((x) => x.kind === 'disk')!.id;
+      const r = await raw(`/api/notifications/${id}/dismiss`, '127.0.0.1:8080', { method: 'POST', headers: { origin: BASE, cookie: `smb_csrf=${CSRF_SECRET}`, 'x-csrf': token } });
+      assert.ok(r.status < 400, String(r.status));
+      assert.ok(!activeNotifications(null).some((x) => x.id === id));
+    });
+
+    it('Origin must match scheme and port, not only the host', async () => {
+      for (const origin of ['https://127.0.0.1:8080', 'https://localhost:8080']) {
+        assert.equal((await post('/api/sites', { origin }, { name: 'Shop', host: 'scheme.shop.test' })).status, 403, origin);
+      }
+      config.uiUrl = 'https://ui.example.com';
+      const ui = (origin: string) => raw('/api/sites', 'ui.example.com', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin, cookie: `smb_csrf=${CSRF_SECRET}` }, body: formBody({ _csrf: CSRF_SECRET, name: 'Shop', host: 'scheme2.shop.test' }) });
+      assert.equal((await ui('http://ui.example.com')).status, 403);
+      assert.ok((await ui('https://ui.example.com:443')).status < 400);
+    });
+
+    it('an unparsable SMB_UI_URL is ignored (loopback only)', async () => {
+      config.uiUrl = 'not a url';
+      assert.equal((await raw('/about', '127.0.0.1:8080')).status, 200);
+      assert.equal((await raw('/about', 'ui.example.com')).status, 421);
+    });
+
+    it('forms carry the token from the server', async () => {
+      const html = await (await req('/sites/new')).text();
+      assert.ok(html.includes(`name="_csrf" value="${CSRF_SECRET}"`));
+    });
   });
 });

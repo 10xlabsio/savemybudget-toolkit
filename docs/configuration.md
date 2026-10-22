@@ -5,6 +5,7 @@ All settings are environment variables, read at start. Values you change in the 
 | Variable | Default | Meaning |
 |---|---|---|
 | `SMB_PUBLIC_URL` | — (required) | The URL the tag posts to, e.g. `https://t.example.com`. Used in the snippet, the setup check, and as the address AI assistants sign in to. |
+| `SMB_UI_URL` | — | The address you open the web UI at when it is not on this machine, e.g. `https://ui.example.com`. Without it the UI answers only to `127.0.0.1`, `localhost` and `[::1]` on its port. Read from the environment only; nothing in the UI changes it. See [Exposing the UI](#exposing-the-ui). |
 | `SMB_TZ` | `UTC` | Timezone for windows and the summary. IANA name. |
 | `SMB_PORT` | `8080` | Port the process listens on. |
 | `SMB_BIND` | `127.0.0.1` | Interface to bind. Compose sets `0.0.0.0` inside the container network; Caddy exposes only `/collect`, `/sdk`, `/mcp` and the two OAuth discovery paths under `/.well-known/`. |
@@ -92,6 +93,8 @@ ui.example.com {
     reverse_proxy toolkit:8080
 }
 ```
+
+Then tell the toolkit that address, or it will refuse the requests with `421`: set `SMB_UI_URL=https://ui.example.com` in the toolkit's environment and restart. The proxy must pass the original `Host` header through (Caddy does by default). A server's IP address or any other name you open the UI by needs the same setting, and so does a different local port (an SSH tunnel to another port, or a Compose port mapping such as `9090:8080`): set `SMB_UI_URL=http://localhost:9090`.
 
 ## Behind your own reverse proxy
 

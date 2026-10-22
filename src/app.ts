@@ -67,16 +67,48 @@ app.mount('/.well-known', wellKnownApp.fetch);
 const UI_EXEMPT_FROM_SETUP = (path: string) =>
   path === '/setup' || path.startsWith('/api/') || path.startsWith('/docs/') || path === '/about' || path === '/settings' || path.startsWith('/templates/') || path === '/sites/new' || path === '/api/sites';
 
+/** Drops the default port so "host" and "host:443" compare equal. */
+const normHost = (h: string) => h.toLowerCase().replace(/:(80|443)$/, '');
+
+const isLoopback = (h: string) => { const p = config.port; return h === normHost(`127.0.0.1:${p}`) || h === normHost(`localhost:${p}`) || h === normHost(`[::1]:${p}`); };
+
+/** The origin of SMB_UI_URL (default ports normalised by URL), or null when unset or unparsable. */
+function uiOrigin(): string | null {
+  if (!config.uiUrl) return null;
+  try { return new URL(config.uiUrl).origin; } catch { return null; }
+}
+
+/** Host values the UI answers to: loopback on the listening port, plus the host of SMB_UI_URL when set. Environment only; nothing editable in the UI feeds this list. */
+function hostAllowed(host: string | undefined): boolean {
+  if (!host) return false;
+  const h = normHost(host);
+  if (isLoopback(h)) return true;
+  const o = uiOrigin();
+  return o !== null && h === normHost(new URL(o).host);
+}
+
+/** A request's Origin/Referer must be exactly one of our origins: scheme and host[:port], not only the host. */
+function originAllowed(u: URL): boolean {
+  if (!hostAllowed(u.host)) return false;
+  if (u.protocol === 'http:' && isLoopback(normHost(u.host))) return true;
+  return u.origin === uiOrigin();
+}
+
+if (config.uiUrl && !uiOrigin()) console.warn(`SMB_UI_URL is set but is not a valid URL ("${config.uiUrl}"), so it is ignored: the web UI answers only on 127.0.0.1, localhost and [::1] on port ${config.port}. Use a full address such as https://ui.example.com.`);
+
 app.use('*', async (c, next) => {
+  // Requests for a Host that is not one of ours get 421 before any handler, cookie or token.
+  if (!hostAllowed(c.req.header('host'))) return c.text('Misdirected request. This address is not one the Toolkit web UI is set up to answer on. To use another address, set SMB_UI_URL to it and restart.', 421, { 'cache-control': 'no-store' });
+
   const nonce = randomBytes(16).toString('base64');
   c.set('nonce', nonce);
   c.set('sites', listSites());
 
-  // CSRF cookie: per-process secret; readable by JS (fetch header), SameSite=Strict.
+  // CSRF cookie: per-process secret, HttpOnly, SameSite=Strict. The token is also written into each page by the server, for its forms and fetches.
   // Secure when the request itself is https, or when a trusted proxy in front terminated TLS.
   const viaHttps = c.req.url.startsWith('https:') || (config.trustProxy && (c.req.header('x-forwarded-proto') ?? '').split(',')[0].trim().toLowerCase() === 'https');
   if (getCookie(c, CSRF_COOKIE) !== CSRF_SECRET) {
-    setCookie(c, CSRF_COOKIE, CSRF_SECRET, { path: '/', sameSite: 'Strict', httpOnly: false, secure: viaHttps });
+    setCookie(c, CSRF_COOKIE, CSRF_SECRET, { path: '/', sameSite: 'Strict', httpOnly: true, secure: viaHttps });
   }
 
   const method = c.req.method;
@@ -103,20 +135,20 @@ app.use('*', async (c, next) => {
   const h = c.res.headers;
   h.set('content-security-policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`);
   h.set('x-content-type-options', 'nosniff');
-  h.set('referrer-policy', 'no-referrer');
+  h.set('referrer-policy', 'same-origin');
   h.set('x-frame-options', 'DENY');
   if (!h.has('cache-control')) h.set('cache-control', 'no-store');
 });
 
 async function csrfProblem(c: Ctx): Promise<string | null> {
-  const host = c.req.header('host');
-  for (const hdr of ['origin', 'referer'] as const) {
-    const v = c.req.header(hdr);
-    if (!v || v === 'null') continue;
-    let h: string;
-    try { h = new URL(v).host; } catch { return `Bad ${hdr} header.`; }
-    if (host && h !== host) return `Cross-site request rejected (${hdr} does not match this host).`;
-  }
+  // A state-changing request must say where it came from: Origin, or Referer when there is no Origin.
+  // Missing, "null" or a host outside the allow-list is refused.
+  const origin = c.req.header('origin');
+  const source = origin !== undefined ? origin : c.req.header('referer');
+  if (!source || source === 'null') return 'Cross-site request rejected (no usable Origin).';
+  let sourceUrl: URL;
+  try { sourceUrl = new URL(source); } catch { return 'Cross-site request rejected (bad Origin).'; }
+  if (!originAllowed(sourceUrl)) return 'Cross-site request rejected (Origin is not this site).';
   const cookie = getCookie(c, CSRF_COOKIE);
   const header = c.req.header('x-csrf');
   let token = header;

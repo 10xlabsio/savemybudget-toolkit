@@ -2,6 +2,13 @@
 
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+- The web UI now answers only to its own addresses: `127.0.0.1`, `localhost` and `[::1]` on the listening port, plus the host of the new `SMB_UI_URL` setting if you set it. Any other host name gets `421`. If you reach the UI by another name, such as a proxy address or a server's IP, set `SMB_UI_URL` to it (see Exposing the UI in the configuration docs).
+- State-changing requests from the UI must now carry a same-site `Origin` (or `Referer`); requests without one, or with `Origin: null`, are refused with `403`.
+- The form token cookie is now `HttpOnly`.
+
 ## [1.1.0] — 2026-10-12
 
 ### Added

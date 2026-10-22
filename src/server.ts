@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --no-warnings=ExperimentalWarning
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
+import './umask.js'; // first: everything this process creates is private to its user
 import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { app } from './app.js';

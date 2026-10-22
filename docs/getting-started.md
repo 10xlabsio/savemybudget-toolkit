@@ -70,13 +70,13 @@ Your data is in the `smb-data` volume and survives updates. The UI shows a notic
 
 ### Upgrading from 1.x to 2.x
 
-The first start on a 2.x image upgrades the database in place; your existing records are kept. Before it changes anything, the toolkit checks that the volume has room for a full copy, then writes `backup-v1-<date>.sqlite` into the data directory (readable by its owner only). If there isn't room, it prints how much is needed and stops without touching your data: free some space and start again.
+The first start on a 2.x image upgrades the database in place; your existing records are kept. Before it changes anything, the toolkit checks that the volume has room for a full copy, then writes `backup-v1-<timestamp>.sqlite` into the data directory (readable by its owner only). If there isn't room, it prints how much is needed and stops without touching your data: free some space and start again.
 
-To go back: stop the container, copy the `backup-v1-<date>.sqlite` file over `toolkit.db` (delete any `toolkit.db-wal` and `toolkit.db-shm` files next to it), set the image to `ghcr.io/10xlabsio/savemybudget-toolkit:1`, and start it. Delete the backup file once you're happy with the new version; it holds the same visitor data as the database.
+To go back: stop the container, copy the `backup-v1-<timestamp>.sqlite` file over `toolkit.db` (delete any `toolkit.db-wal` and `toolkit.db-shm` files next to it), set the image to `ghcr.io/10xlabsio/savemybudget-toolkit:1`, and start it. Every start that has to upgrade takes a new copy. The toolkit deletes the copy by itself once the retention period (default 90 days) has passed since the upgrade, and Settings shows a notice while one exists. Delete it sooner once you're happy with the new version; it holds the same visitor data as the database.
 
 ## Backing up
 
-Everything is in the volume: `docker run --rm -v smb-data:/data -v $(pwd):/backup alpine tar czf /backup/smb-data.tgz /data`. Settings → **Export all data** produces CSVs per site if you want something readable. The data directory is private to the user the toolkit runs as (folders `0700`, files `0600`; existing ones are tightened at start). Keep any copies you make just as private.
+Everything is in the volume: `docker run --rm -v smb-data:/data -v $(pwd):/backup alpine sh -c 'umask 077 && tar czf /backup/smb-data.tgz /data'`. Settings → **Export all data** produces CSVs per site if you want something readable. The data directory is private to the user the toolkit runs as (folders `0700`, files `0600`; existing ones are tightened at start). Keep any copies you make just as private.
 
 ## Uninstalling
 

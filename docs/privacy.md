@@ -24,6 +24,8 @@ If your policy or your jurisdiction requires consent for this kind of collection
 
 Default 90 days, purged nightly, configurable down to 60 (Google's claim window). Set it to the shortest period that still lets you file. Analyses and claim packages you build are kept until you delete them — they contain IP addresses too.
 
+Upgrading from 1.x leaves a full copy of the database, `backup-v1-<timestamp>.sqlite`, in the data directory. It holds the same visitor data as the database, including the events the retention purge removes from the live one. The toolkit deletes it automatically once the retention period has passed since the upgrade, and Settings shows a notice while it exists. To delete it earlier, remove the file. A request from a visitor to erase their data must cover this copy as well: delete it, or wait for it to be removed, before you tell the visitor the data is gone.
+
 ## Access
 
 The UI is bound to the host's loopback interface by default and is not reachable from the internet. If you expose it, put authentication in front of it (see [Configuration](configuration.md#exposing-the-ui)). Server logs at the default level don't include visitor IPs.
@@ -32,7 +34,7 @@ AI assistants (Settings → AI assistants, off by default) can read what the UI 
 
 ## Deleting
 
-Settings → per site → **Delete site data** removes every record for that site. `docker compose down -v` removes everything. If a visitor asks you to erase their data, delete the rows for their IP with the export/delete tools or directly in the SQLite file at `/data/toolkit.db`.
+Settings → per site → **Delete site data** removes every record for that site. `docker compose down -v` removes everything. If a visitor asks you to erase their data, delete the rows for their IP with the export/delete tools or directly in the SQLite file at `/data/toolkit.db`. Remember the upgrade copy described under Retention.
 
 ## What leaves your server
 

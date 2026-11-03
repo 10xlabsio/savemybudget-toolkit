@@ -69,7 +69,10 @@ function keyFingerprint(): string {
 
 interface OwnerRow { email_hash: string | null; sub: string | null; pinned_at: number | null; epoch: number; key_fp: string | null }
 
-const emailHash = (email: string) => sha256(`owner-email\n${email.trim().toLowerCase()}`);
+/** HMAC of the owner email under a random per-install salt kept in the same row: the address itself is never stored. */
+function emailHash(email: string, salt: string): string {
+  return createHmac('sha256', salt).update(`owner-email\n${email.trim().toLowerCase()}`).digest('hex');
+}
 
 /**
  * The owner row, brought in line with the configuration first: a different owner email or secret key clears the
@@ -77,9 +80,9 @@ const emailHash = (email: string) => sha256(`owner-email\n${email.trim().toLower
  */
 export function ownerRow(): OwnerRow {
   const d = db();
-  d.prepare('INSERT OR IGNORE INTO owner(id, epoch) VALUES(1, 0)').run();
-  const r = d.prepare('SELECT email_hash, sub, pinned_at, epoch, key_fp FROM owner WHERE id = 1').get() as unknown as OwnerRow;
-  const wantEmail = config.ownerEmail ? emailHash(config.ownerEmail) : null;
+  d.prepare('INSERT OR IGNORE INTO owner(id, epoch, email_salt) VALUES(1, 0, ?)').run(b64url(randomBytes(32)));
+  const r = d.prepare('SELECT email_hash, sub, pinned_at, epoch, key_fp, email_salt FROM owner WHERE id = 1').get() as unknown as OwnerRow & { email_salt: string };
+  const wantEmail = config.ownerEmail ? emailHash(config.ownerEmail, r.email_salt) : null;
   const wantKey = keyFingerprint();
   if (r.email_hash === wantEmail && (r.key_fp ?? '') === wantKey) return r;
   const emailChanged = r.email_hash !== wantEmail;
@@ -145,6 +148,14 @@ export function endSession(cookie: string | undefined): void {
   if (cookie && SESSION_RE.test(cookie)) db().prepare('DELETE FROM owner_sessions WHERE id_hash = ?').run(sha256(cookie));
 }
 
+/** At start-up with sign-in off: end every session, so turning sign-in back on later doesn't revive old ones. */
+export function endSessionsWhileSigninOff(): void {
+  if (authMode().kind !== 'open') return;
+  const d = db();
+  if ((d.prepare('SELECT COUNT(*) AS n FROM owner_sessions').get() as { n: number }).n === 0) return;
+  endAllSessions();
+}
+
 /** Sign out everywhere: the epoch moves on, so no earlier session is valid, and their rows go. */
 export function endAllSessions(): void {
   ownerRow();
@@ -200,12 +211,19 @@ export function consumeSignin(state: string, cookie: string | undefined, nowMs =
 
 /** A same-site path to return to after sign-in; anything else becomes `/`. */
 export function safeNext(next: string | undefined | null): string {
-  if (!next || next.length > 2048 || !next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\') || /[\u0000-\u001f\u007f]/.test(next)) return '/';
+  if (!isLocalPath(next)) return '/';
   try {
     const u = new URL(next, 'http://toolkit.invalid');
     if (u.origin !== 'http://toolkit.invalid' || u.pathname.startsWith('/auth/')) return '/';
-    return u.pathname + u.search;
+    // URL parsing normalises the path ("/.//host" becomes "//host"), so the result is checked again, not only the input.
+    const out = u.pathname + u.search;
+    return isLocalPath(out) ? out : '/';
   } catch { return '/'; }
+}
+
+/** One leading slash, then no slash or backslash straight after it, no backslash anywhere, no control characters. */
+function isLocalPath(p: string | undefined | null): p is string {
+  return !!p && p.length <= 2048 && p[0] === '/' && p[1] !== '/' && p[1] !== '\\' && !p.includes('\\') && !/[\u0000-\u001f\u007f]/.test(p);
 }
 
 /** Hourly: drop expired sessions and sign-ins nobody finished. */

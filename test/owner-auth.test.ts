@@ -19,13 +19,15 @@ const { app } = await import('../src/app.js');
 const { config, secretKeyBytes } = await import('../src/config.js');
 const { CSRF_SECRET } = await import('../src/ui.js');
 const { setGoogleFetch, verifyIdToken } = await import('../src/auth/google.js');
-const { setAuthClock, SESSION_IDLE_MS, SESSION_ABSOLUTE_MS, maskEmail, safeNext } = await import('../src/auth/owner.js');
+const { setAuthClock, SESSION_IDLE_MS, SESSION_ABSOLUTE_MS, maskEmail, safeNext, endSessionsWhileSigninOff } = await import('../src/auth/owner.js');
+const { resetSigninLimit } = await import('../src/auth/routes.js');
 const { hourlyTick } = await import('../src/jobs/index.js');
 const { issueToken } = await import('../src/mcp/token.js');
 const { resetMcpRateLimit } = await import('../src/mcp/index.js');
 const { resetOAuthLimits } = await import('../src/mcp/oauth.js');
 
 setGoogleFetch(H.fakeFetch);
+resetSigninLimit(1_000_000);
 
 const T0 = Date.parse('2026-11-02T10:00:00.000Z');
 let now = T0;
@@ -362,6 +364,28 @@ describe('sign-in checks', () => {
     assert.equal(r.headers.get('location'), null);
   });
 
+  it('never redirects off-site after sign-in, whatever next says', async () => {
+    const s = await signedIn();
+    for (const next of ['/.//evil.example/phish', '//evil.example/x', '/\\evil.example', 'javascript:alert(1)']) {
+      const r = await req(`/auth/google/signin?next=${encodeURIComponent(next)}`, withCookie(`__Host-smb_session=${s}`));
+      assert.equal(r.status, 302);
+      assert.equal(r.headers.get('location'), '/', next);
+      const page = await (await req(`/auth/google/signin?next=${encodeURIComponent(next)}`)).text();
+      assert.ok(page.includes('href="/auth/google/start"'), next);
+      const st = await start(next);
+      H.pending.set('nx', { challenge: st.challenge, claims: H.goodClaims(st.nonce, now) });
+      assert.equal((await callback(st, 'nx')).headers.get('location'), '/', next);
+    }
+  });
+
+  it('limits sign-in starts per address', async () => {
+    resetSigninLimit(3);
+    try {
+      for (let i = 0; i < 3; i++) assert.equal((await req('/auth/google/start')).status, 302);
+      assert.equal((await req('/auth/google/start')).status, 429);
+    } finally { resetSigninLimit(1_000_000); }
+  });
+
   it('a failed token exchange signs nobody in', async () => {
     const s = await start();
     H.pending.set('c-500', { challenge: s.challenge, status: 500 });
@@ -370,7 +394,13 @@ describe('sign-in checks', () => {
   });
 
   it('the return path stays on this site', () => {
-    for (const bad of ['https://evil.example/', '//evil.example/x', '/\\evil.example', 'javascript:alert(1)', '/auth/google/start', '']) assert.equal(safeNext(bad), '/', bad);
+    const bad = ['https://evil.example/', '//evil.example/x', '/\\evil.example', '/\\\\evil.example', 'javascript:alert(1)', '/auth/google/start', '',
+      '/.//evil.example/phish', '/./\\evil.example', '/a/..//evil.example', '/%2F%2Fevil.example', '/x\\y'];
+    for (const b of bad) {
+      const out = safeNext(b);
+      assert.ok(out.startsWith('/') && !out.startsWith('//') && !out.includes('\\'), `${b} → ${out}`);
+    }
+    for (const b of ['https://evil.example/', '//evil.example/x', '/\\evil.example', 'javascript:alert(1)', '/.//evil.example/phish', '/a/..//evil.example']) assert.equal(safeNext(b), '/', b);
     assert.equal(safeNext('/sites/3?range=30d'), '/sites/3?range=30d');
     assert.equal(maskEmail('owner@example.com'), 'o•••@example.com');
   });
@@ -409,7 +439,10 @@ describe('sessions', () => {
     assert.ok(!/Domain=/i.test(c));
     const rows = db().prepare('SELECT id_hash FROM owner_sessions').all() as { id_hash: string }[];
     assert.deepEqual(rows.map((x) => x.id_hash), [createHash('sha256').update(session!).digest('hex')]);
-    assert.ok(!JSON.stringify(db().prepare('SELECT * FROM owner').all()).includes(H.OWNER), 'no email stored');
+    const row = db().prepare('SELECT email_hash, email_salt FROM owner').get() as { email_hash: string; email_salt: string };
+    assert.ok(!JSON.stringify(row).includes(H.OWNER), 'no email stored');
+    assert.notEqual(row.email_hash, createHash('sha256').update(`owner-email\n${H.OWNER}`).digest('hex'), 'not a plain hash');
+    assert.ok(row.email_salt.length >= 40);
   });
 
   it('ends after 7 days idle', async () => {
@@ -469,6 +502,16 @@ describe('sessions', () => {
     assert.equal(db().prepare('SELECT sub FROM owner').get()!.sub, null);
     config.ownerEmail = H.OWNER;
     assert.ok(isSigninRedirect(await req('/sites', withCookie(`__Host-smb_session=${a}`))), 'switching back does not revive it');
+  });
+
+  it('a start with sign-in off ends every session, so turning it back on starts clean', async () => {
+    const a = await signedIn();
+    endSessionsWhileSigninOff(); // sign-in on: nothing happens
+    assert.equal((await req('/sites', withCookie(`__Host-smb_session=${a}`))).status, 200);
+    openMode();
+    endSessionsWhileSigninOff();
+    signinMode();
+    assert.ok(isSigninRedirect(await req('/sites', withCookie(`__Host-smb_session=${a}`))));
   });
 
   it('rotating the secret key ends every session', async () => {

@@ -50,7 +50,8 @@ The session cookie is `Secure`, so the browser only keeps it over HTTPS or on `l
 - **Who may sign in.** Google must confirm the address (`email_verified`), and it must equal `SMB_OWNER_EMAIL` (case doesn't matter). The first successful sign-in pins that Google account (its permanent account ID). After that, a different Google account with the same address is refused, so a Workspace admin re-pointing the address can't get in. The toolkit is never "owned" by whoever signs in first.
 - **What Google is asked for.** `openid email`, with the account chooser every time. No offline access and no other scopes, so the toolkit holds no Google token for you after sign-in.
 - **How the answer is checked.** The sign-in carries PKCE (S256), a `state` signed by the toolkit that can be used once within 10 minutes and is tied to a short-lived cookie in your browser, and a nonce. The ID token from Google's token endpoint is verified on your server: its RS256 signature against Google's published keys (fetched from Google and cached as long as Google allows), the issuer, the audience (your client ID), the expiry, the nonce and `email_verified`. A Google error is shown on the page, never followed as a redirect.
-- **Sessions.** The cookie is `__Host-smb_session` (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`), holding 32 random bytes. The database stores only its SHA-256, never your email address. A session ends after 7 days without use or 30 days in all, whichever comes first. Every sign-in gets a new session.
+- **Sessions.** The cookie is `__Host-smb_session` (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`), holding 32 random bytes. The database stores only its SHA-256. Your email address isn't stored either: only an HMAC of it under a random value made for this install, enough to notice when `SMB_OWNER_EMAIL` changes. A session ends after 7 days without use or 30 days in all, whichever comes first. Every sign-in gets a new session.
+- **Limits.** One address can start at most 20 sign-ins in 10 minutes. The page you return to after sign-in is always a path on the toolkit itself; anything else becomes the start page.
 - **Forms.** Every change (a POST) needs a form token derived from your session, the matching cookie, and an `Origin` or `Referer` from the UI's own address.
 - **The UI never accepts a bearer token,** and `/mcp` never accepts the session cookie.
 
@@ -80,4 +81,4 @@ If the owner's Google account was deleted and created again under the same addre
 
 ## Turning it off
 
-Remove `SMB_GOOGLE_CLIENT_ID` and restart. The UI goes back to loopback mode: keep it off the internet, behind an SSH tunnel.
+Remove `SMB_GOOGLE_CLIENT_ID` and restart. The UI goes back to loopback mode: keep it off the internet, behind an SSH tunnel. That start also ends every session, so turning sign-in back on later means signing in again.

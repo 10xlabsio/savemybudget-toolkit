@@ -7,7 +7,8 @@ import type { Migration } from './index.js';
  * Owner sign-in (used only when a Google OAuth client is configured).
  *
  * - `owner`: one row. The SHA-256 of the configured owner email, Google's `sub` pinned at the first sign-in, the
- *   session epoch (bumped by "Sign out everywhere") and a fingerprint of the secret key in use. A change to the
+ *   session epoch (bumped by "Sign out everywhere") and a fingerprint of the secret key in use. The email is kept
+ *   only as an HMAC under `email_salt`, random per install. A change to the
  *   email or the key clears the pin and ends every session.
  * - `owner_sessions`: only the SHA-256 of each session id; the id itself lives in the browser cookie alone.
  * - `owner_signin_states`: the single-use ids of sign-ins in progress (10 minutes).
@@ -25,7 +26,8 @@ export const ownerAuth: Migration = {
       sub TEXT,
       pinned_at INTEGER,
       epoch INTEGER NOT NULL DEFAULT 0,
-      key_fp TEXT
+      key_fp TEXT,
+      email_salt TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS owner_sessions (
       id_hash TEXT PRIMARY KEY,

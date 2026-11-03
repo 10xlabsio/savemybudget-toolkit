@@ -17,6 +17,8 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { config } from '../config.js';
 import { log } from '../jobs/index.js';
 import { normHost, uiBase, type AppEnv } from '../ui.js';
+import { clientIp, clientKey } from '../collect/index.js';
+import { makeRateLimiter } from '../ratelimit.js';
 import { GoogleSignInError, authorizationUrl, exchangeCode, verifyIdToken } from './google.js';
 import {
   SESSION_COOKIE, SIGNIN_COOKIE, admitOwner, authMode, authNow, consumeSignin, createSession, endAllSessions, endSession, maskEmail,
@@ -133,6 +135,12 @@ function canonical(c: Context): Response | null {
 const sessionCookie = (c: Context, value: string, maxAge: number) =>
   setCookie(c, SESSION_COOKIE, value, { path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge });
 
+const START_LIMIT = 20;
+const START_WINDOW_MS = 10 * 60_000;
+let starts = makeRateLimiter(START_LIMIT, START_WINDOW_MS);
+/** For tests: a fresh limit on sign-in starts. */
+export function resetSigninLimit(limit = START_LIMIT): void { starts = makeRateLimiter(limit, START_WINDOW_MS); }
+
 export function mountOwnerAuth(app: Hono<AppEnv>): void {
   const signinOnly = (c: Context) => (authMode().kind === 'signin' ? null : c.text('Not found', 404));
 
@@ -147,6 +155,8 @@ export function mountOwnerAuth(app: Hono<AppEnv>): void {
   app.get('/auth/google/start', (c) => {
     const off = signinOnly(c) ?? canonical(c);
     if (off) return off;
+    // Each start records a pending sign-in; one address can't start enough to push the owner's out.
+    if (starts(clientKey(clientIp(c as never)))) return c.text('Too many sign-in attempts from this address. Wait a few minutes and try again.', 429, { 'cache-control': 'no-store', 'retry-after': '600' });
     const s = startSignin(safeNext(c.req.query('next')));
     setCookie(c, SIGNIN_COOKIE, s.cookie, { path: '/auth/google', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600 });
     c.header('cache-control', 'no-store');

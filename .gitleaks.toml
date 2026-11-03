@@ -1,0 +1,7 @@
+# Gitleaks configuration for this repository, used by .github/workflows/boundary.yml (gitleaks 8.30.1).
+# It runs gitleaks' built-in rules unchanged. Add an allowlist entry here only for a proven false positive,
+# with a comment saying why; never for a real credential (rotate it instead).
+title = "savemybudget-toolkit"
+
+[extend]
+useDefault = true

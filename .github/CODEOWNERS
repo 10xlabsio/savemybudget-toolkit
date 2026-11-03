@@ -1,0 +1,10 @@
+# Changes to these paths need the maintainer's review (see CONTRIBUTING.md).
+# The detection core is generated from the maintainer's source; the boundary list and the checks that use it
+# are maintained alongside it.
+/src/detection/ @10xlabsio
+/.github/boundary/ @10xlabsio
+/.github/CODEOWNERS @10xlabsio
+/.github/workflows/boundary.yml @10xlabsio
+/.gitleaks.toml @10xlabsio
+/scripts/boundary-scan.mjs @10xlabsio
+/scripts/check-provenance.mjs @10xlabsio

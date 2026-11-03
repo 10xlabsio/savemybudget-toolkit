@@ -1,0 +1,157 @@
+name: Boundary
+# Checks that keep this public repository clean (see CONTRIBUTING.md, "Boundary checks"):
+#   - gitleaks over the tree and the pushed commits, with this repo's .gitleaks.toml;
+#   - the keyed-term scan (scripts/boundary-scan.mjs) over the tree, the commit messages, the pull request
+#     title and body and the branch name. It needs the repository secret BOUNDARY_HMAC_KEY and fails closed
+#     without it, so pull requests from forks fail this check;
+#   - the provenance check of the generated detection core (scripts/check-provenance.mjs);
+#   - the tests of these checks, and the parity corpus test once the corpus is in the tree.
+# Never pull_request_target: pull request code never runs with write access or with secrets from a fork.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main, v2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boundary-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: Gitleaks over the tree
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner --exit-code 1
+      - name: Gitleaks over the new commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="-1 $HEAD"
+          else
+            RANGE="$BASE..$HEAD"
+          fi
+          gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 1 --log-opts="$RANGE"
+
+  keyed-scan:
+    # The only job that sees BOUNDARY_HMAC_KEY. It installs nothing and runs no package scripts. On a pull
+    # request the scanner and the keyed list come from the base branch, so code under review never runs with
+    # the key; the pull request's tree, commits and text are only read.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: tree
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+      - name: Keyed-term scan
+        env:
+          BOUNDARY_HMAC_KEY: ${{ secrets.BOUNDARY_HMAC_KEY }}
+          BOUNDARY_PR_TITLE: ${{ github.event.pull_request.title }}
+          BOUNDARY_PR_BODY: ${{ github.event.pull_request.body }}
+          BOUNDARY_REF_NAME: ${{ github.head_ref || github.ref_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          FROM=tree
+          if [ -d base ]; then
+            if [ -f base/scripts/boundary-scan.mjs ] && [ -f base/.github/boundary/keyed.json ]; then
+              FROM=base
+            else
+              echo "::warning::The base branch has no keyed-term scanner yet; using this pull request's copy (first setup only)."
+            fi
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$HEAD~1..$HEAD"
+            git -C tree rev-parse -q --verify "$HEAD~1" >/dev/null || RANGE="$HEAD"
+          else
+            RANGE="$BASE..$HEAD"
+          fi
+          node "$FROM/scripts/boundary-scan.mjs" --root tree --list "$FROM/.github/boundary/keyed.json" --git-range "$RANGE"
+
+  provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+      - name: Detection core matches PROVENANCE.json
+        run: node scripts/check-provenance.mjs
+
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: Tests of the boundary checks
+        env:
+          BOUNDARY_TEST_REQUIRE_GITLEAKS: "1"
+        run: node --test --import tsx test/boundary.test.ts
+      - name: Parity corpus test
+        run: |
+          set -euo pipefail
+          CORPUS=src/detection/fixtures/parity
+          if [ ! -d "$CORPUS" ]; then
+            echo "::notice::The parity corpus ($CORPUS/) is not in this tree yet; skipping the parity test. It runs once the first detection export lands."
+            exit 0
+          fi
+          if [ ! -f test/parity.test.ts ]; then
+            echo "::error::$CORPUS/ is present but test/parity.test.ts is missing; the corpus must be checked."
+            exit 1
+          fi
+          node --test --import tsx test/parity.test.ts

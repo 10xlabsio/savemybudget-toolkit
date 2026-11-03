@@ -5,12 +5,21 @@ import './umask.js'; // first: everything this process creates is private to its
 import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { app } from './app.js';
-import { config } from './config.js';
+import { config, secretKeyBytes } from './config.js';
 import { db } from './db.js';
 import { InsufficientDiskSpace } from './migrations/index.js';
 import { startJobs, stopJobs, log } from './jobs/index.js';
 import * as telemetry from './telemetry/index.js';
 import { syncInstanceToken } from './mcp/oauth.js';
+import { authMode, endSessionsWhileSigninOff, ownerRow } from './auth/owner.js';
+import { redirectUri } from './auth/routes.js';
+
+try {
+  secretKeyBytes(); // a malformed SMB_SECRET_KEY stops the start, before anything is opened
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
 
 try {
   db(); // opens the store and runs pending migrations before anything listens
@@ -23,6 +32,14 @@ try {
 }
 telemetry.instanceId();
 syncInstanceToken(); // a changed SMB_MCP_TOKEN signs every assistant out
+const mode = authMode();
+endSessionsWhileSigninOff(); // turning sign-in off ends every session, so turning it on later starts clean
+if (mode.kind === 'signin') {
+  ownerRow(); // a changed owner email or secret key ends every session now, not at the next request
+  log(`Google sign-in is on: only the owner can open the web UI. Redirect URI to register: ${redirectUri()}`);
+} else if (mode.kind === 'locked') {
+  log(`A Google OAuth client is set, but ${mode.missing.join(' and ')} is not: the web UI shows only a page saying so until it is set.`);
+}
 
 if (telemetry.enabled()) {
   console.log('Anonymous usage counts are on — see TELEMETRY.md. Set SMB_TELEMETRY=off to disable.');

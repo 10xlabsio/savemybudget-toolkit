@@ -53,6 +53,7 @@ visitor clicks ad → lands on your site → tag posts a beacon → https://t.ex
 | [AI assistants](docs/ai-assistants.md) | Connect Claude, Cursor or another MCP client; the tools and what they return |
 | [Privacy](docs/privacy.md) | IP addresses are personal data; retention; consent modes |
 | [Configuration](docs/configuration.md) | Environment variables and settings |
+| [Owner sign-in](docs/owner-sign-in.md) | Lock the UI to your Google account: the OAuth client, the settings, sign-out |
 | [Telemetry](TELEMETRY.md) | What is sent, what never is, how to turn it off |
 | [FAQ](docs/faq.md) | |
 | [Roadmap](docs/roadmap.md) | |

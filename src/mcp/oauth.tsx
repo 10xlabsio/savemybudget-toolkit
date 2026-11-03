@@ -27,7 +27,9 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { db, bumpCounter, getSetting, setSetting, now as nowIso } from '../db.js';
 import { clientIp, clientKey } from '../collect/index.js';
 import { makeRateLimiter } from '../ratelimit.js';
-import { publicUrl, readBodyCapped } from '../ui.js';
+import { normHost, publicUrl, readBodyCapped, uiBase } from '../ui.js';
+import { authMode, safeEqual as sameSecret } from '../auth/owner.js';
+import { ownerSessionOf } from '../auth/routes.js';
 import { mcpEnabled, tokenFingerprint, tokenMatches } from './token.js';
 
 export const ACCESS_TTL_S = 3600;
@@ -237,7 +239,10 @@ function Shell(p: { title: string; children: unknown }) {
   );
 }
 
-function ConsentPage(p: { host: string; clientName: string; redirect: { host: string; full: string | null; familiar: boolean }; hidden: Record<string, string>; error?: string | null }) {
+/** How the operator approves: the instance token, or (with Google sign-in on) the owner's own session plus this consent step. */
+type Approver = { kind: 'owner'; email: string } | { kind: 'token'; signInHref: string | null };
+
+function ConsentPage(p: { host: string; clientName: string; redirect: { host: string; full: string | null; familiar: boolean }; hidden: Record<string, string>; approver: Approver; error?: string | null }) {
   return (
     <Shell title={`Connect ${p.clientName} — SaveMyBudget Toolkit`}>
       <div class="brand">SaveMyBudget Toolkit · {p.host}</div>
@@ -257,9 +262,16 @@ function ConsentPage(p: { host: string; clientName: string; redirect: { host: st
       {p.error ? <div class="err">{p.error}</div> : null}
       <form method="post">
         {Object.entries(p.hidden).map(([k, v]) => <input type="hidden" name={k} value={v} />)}
-        <label for="token">Toolkit token</label>
-        <input type="password" id="token" name="token" autocomplete="off" required />
-        <p class="hint">From Settings → AI assistants on your toolkit. Lost it? Create a new one there — that also signs out every other assistant.</p>
+        {p.approver.kind === 'owner' ? (
+          <p class="hint">Signed in as {p.approver.email}. Connecting doesn't need the toolkit token; signing out later doesn't disconnect the assistant (a new token does).</p>
+        ) : (
+          <>
+            <label for="token">Toolkit token</label>
+            <input type="password" id="token" name="token" autocomplete="off" required />
+            <p class="hint">From Settings → AI assistants on your toolkit. Lost it? Create a new one there — that also signs out every other assistant.</p>
+            {p.approver.signInHref ? <p class="hint">Or <a href={p.approver.signInHref}>sign in with Google</a> as the owner, then come back to this step.</p> : null}
+          </>
+        )}
         <div class="row">
           <button type="submit" class="pri" name="decision" value="allow">Connect</button>
           <button type="submit" name="decision" value="deny" formnovalidate>Cancel</button>
@@ -374,10 +386,21 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     return { client, redirectUri, state: q('state') ?? null, challenge, resource };
   };
 
-  const hiddenFor = (v: Authz, nonce: string) => ({
+  const hiddenFor = (v: Authz, nonce: string, owner: { csrf: string } | null) => ({
     client_id: v.client.id, redirect_uri: v.redirectUri, state: v.state ?? '', code_challenge: v.challenge, code_challenge_method: 'S256',
-    response_type: 'code', resource: v.resource ?? '', nonce,
+    response_type: 'code', resource: v.resource ?? '', nonce, ...(owner ? { via: 'owner', _csrf: owner.csrf } : {}),
   });
+  /**
+   * The approver for this browser. The owner's session counts only in sign-in mode and still needs the Connect
+   * click. "Sign in with Google" is offered only when this page is on the UI's own address, where the session cookie lives.
+   */
+  const approverFor = (c: Context, origin: string, v: Authz): { approver: Approver; owner: { csrf: string } | null } => {
+    const s = ownerSessionOf(c);
+    if (s) return { approver: { kind: 'owner', email: s.email }, owner: { csrf: s.csrf } };
+    const sameHost = authMode().kind === 'signin' && normHost(new URL(origin).host) === normHost(new URL(uiBase()).host);
+    const back = `/mcp/oauth/authorize?${new URLSearchParams(Object.entries(hiddenFor(v, '', null)).filter(([k, x]) => k !== 'nonce' && x !== ''))}`;
+    return { approver: { kind: 'token', signInHref: sameHost ? `/auth/google/signin?next=${encodeURIComponent(back)}` : null }, owner: null };
+  };
   /** Where the code goes, as the operator should see it: host for https, the full address for anything else. */
   const describeRedirect = (uri: string) => {
     let u: URL | null = null;
@@ -403,7 +426,8 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     if (!origin || !mcpEnabled()) return off(c);
     const v = await validate(c, origin, (k) => c.req.query(k) || undefined);
     if (v instanceof Response) return v;
-    return page(c, <ConsentPage host={new URL(origin).host} clientName={cleanName(v.client.name)} redirect={describeRedirect(v.redirectUri)} hidden={hiddenFor(v, issueNonce(c, origin))} />);
+    const a = approverFor(c, origin, v);
+    return page(c, <ConsentPage host={new URL(origin).host} clientName={cleanName(v.client.name)} redirect={describeRedirect(v.redirectUri)} hidden={hiddenFor(v, issueNonce(c, origin), a.owner)} approver={a.approver} />);
   });
 
   app.post('/oauth/authorize', async (c) => {
@@ -417,10 +441,16 @@ export function mountOAuth(app: Hono<{ Bindings: HttpBindings }>): void {
     const nonce = q('nonce') ?? '', cookie = getCookie(c, NONCE_COOKIE) ?? '';
     if (!nonce || !cookie || !safeEqual(nonce, cookie)) return page(c, <ErrorPage message="This sign-in page has expired or was opened somewhere else. Start the connection again from your AI assistant." />, 400);
     if (q('decision') !== 'allow') return redirectWith(c, origin, v.redirectUri, { error: 'access_denied', state: v.state });
-    const again = (error: string, status: 401 | 429) => page(c, <ConsentPage host={new URL(origin).host} clientName={cleanName(v.client.name)} redirect={describeRedirect(v.redirectUri)} hidden={hiddenFor(v, nonce)} error={error} />, status);
-    // A client that keeps getting the token wrong is paused even if its next guess is right.
-    if (wrongTokens.peek(keyOf(c))) return again('Too many attempts. Wait a minute and try again.', 429);
-    if (!tokenMatches(q('token') ?? '')) {
+    const a = approverFor(c, origin, v);
+    const again = (error: string, status: 401 | 429) => page(c, <ConsentPage host={new URL(origin).host} clientName={cleanName(v.client.name)} redirect={describeRedirect(v.redirectUri)} hidden={hiddenFor(v, nonce, a.owner)} approver={a.approver} error={error} />, status);
+    if (q('via') === 'owner') {
+      // Approved by the signed-in owner: the session must still be valid and the form must carry its token.
+      const s = ownerSessionOf(c);
+      if (!s || !sameSecret(q('_csrf') ?? '', s.csrf)) return again('Your sign-in has ended. Approve again with the token, or sign in again.', 401);
+    } else if (wrongTokens.peek(keyOf(c))) {
+      // A client that keeps getting the token wrong is paused even if its next guess is right.
+      return again('Too many attempts. Wait a minute and try again.', 429);
+    } else if (!tokenMatches(q('token') ?? '')) {
       wrongTokens(keyOf(c));
       bumpCounter('mcp_unauthorized');
       return again("That token doesn't match this toolkit. Copy it again from Settings → AI assistants, or create a new one there.", 401);

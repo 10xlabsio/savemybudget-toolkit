@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import * as telemetry from '../telemetry/index.js';
 import { mcpEnabled } from '../mcp/token.js';
 import { sweepOAuth } from '../mcp/oauth.js';
+import { sweepOwnerAuth } from '../auth/owner.js';
 import { purgeOldBackups } from '../migrations/index.js';
 
 // ---------- notifications ----------
@@ -92,6 +93,7 @@ export function hourlyTick(nowDate = new Date()) {
 
   // Expired sign-in codes and tokens
   try { sweepOAuth(nowDate.getTime()); } catch (e) { log('oauth sweep failed', e); }
+  try { sweepOwnerAuth(nowDate.getTime()); } catch (e) { log('sign-in sweep failed', e); }
 
   // Retention purge
   const cutoff = new Date(nowDate.getTime() - retentionDays() * 86400e3).toISOString();

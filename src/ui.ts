@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 10xlabs. Part of the SaveMyBudget Toolkit — https://github.com/10xlabsio/savemybudget-toolkit
 /** Shared UI plumbing: env type, CSRF secret, public URL, formatting helpers, static lists. */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import { domainToASCII, domainToUnicode, fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -13,7 +14,7 @@ import type { Site } from './types.js';
 export type AppEnv = {
   Bindings: HttpBindings;
   /** rawBody: a multipart body read under the upload cap by the UI middleware (see readBodyCapped). */
-  Variables: { nonce: string; sites: Site[]; rawBody?: Buffer };
+  Variables: { nonce: string; sites: Site[]; rawBody?: Buffer; csrf: string };
 };
 export type Ctx = Context<AppEnv>;
 
@@ -23,9 +24,30 @@ export const DOCS_DIR = join(ROOT, 'docs');
 export const TEMPLATES_DIR = join(ROOT, 'templates');
 export const DATA_ASSETS_DIR = join(ROOT, 'data');
 
-/** Per-process CSRF secret (spec: cookie smb_csrf, compared with _csrf field / x-csrf header). */
+/**
+ * Per-process form token, used when no Google sign-in is configured (cookie smb_csrf, compared with the _csrf
+ * field or x-csrf header). With sign-in on, the token is derived from the owner's session instead.
+ */
 export const CSRF_SECRET = randomBytes(24).toString('hex');
 export const CSRF_COOKIE = 'smb_csrf';
+
+/** Drops the default port so "host" and "host:443" compare equal. */
+export const normHost = (h: string) => h.toLowerCase().replace(/:(80|443)$/, '');
+
+/** The origin of SMB_UI_URL (default ports normalised by URL), or null when unset or unparsable. */
+export function uiOrigin(): string | null {
+  if (!config.uiUrl) return null;
+  try { return new URL(config.uiUrl).origin; } catch { return null; }
+}
+
+/** The address the UI is opened at for sign-in: SMB_UI_URL, else localhost on the listening port. Never from request headers. */
+export const uiBase = () => uiOrigin() ?? `http://localhost:${config.port}`;
+
+/** Per-request values the page layout needs (the form token, the signed-in owner, the access mode). */
+export interface RequestScope { csrf: string; ownerEmail: string | null; open: boolean }
+export const requestScope = new AsyncLocalStorage<RequestScope>();
+/** The form token for the current request: session-derived when signed in, else the per-process one. */
+export const currentCsrf = () => requestScope.getStore()?.csrf ?? CSRF_SECRET;
 
 export function publicUrl(): string {
   const s = getSetting('public_url');

@@ -12,6 +12,17 @@ The latest minor release. Security fixes are released as patch versions and anno
 
 The only routes meant to be public are `POST /collect`, `GET /collect/healthz`, `GET /sdk/*`, `/mcp` (including its sign-in pages under `/mcp/oauth/`) and the OAuth discovery documents under `/.well-known/`. The shipped Compose file and Caddyfile expose nothing else. Findings about the UI being reachable are still welcome — someone will expose it — but the intended threat model is: an attacker on the internet can send beacons and fetch the SDK, and without the MCP token gets nothing else.
 
+## Owner sign-in
+
+With `SMB_GOOGLE_CLIENT_ID` set, every UI request needs the owner's Google sign-in (see [docs/owner-sign-in.md](docs/owner-sign-in.md)); without it, the UI keeps the loopback-only behaviour above. The routes that answer without a session are fixed: `/collect/*`, `/v1/*`, `/healthz`, `/sdk/*`, `/mcp` and `/mcp/oauth/*` (their own token), `/.well-known/oauth-*`, and the sign-in routes `/auth/google/*`. A test lists every route the server registers with what it needs, and fails when a new one is added without a decision. A client ID set without `SMB_OWNER_EMAIL` (or without the client secret) locks the UI to a page saying what to set; it never falls back to the open mode.
+
+- Sign-in asks for `openid email` only (no offline access), with PKCE S256, a nonce, and a `state` that is HMAC-signed, names the flow, expires after 10 minutes, is bound to an `HttpOnly`, `SameSite=Lax` cookie and is recorded so it can be used once; one address can start at most 20 sign-ins in 10 minutes. The return path after sign-in is checked after URL normalisation and must be a single-slash path on the toolkit. The redirect URI comes from `SMB_UI_URL` (or `http://localhost:<port>`), never from `Host` or `X-Forwarded-*`. Google's `error` is rendered escaped and never redirected.
+- The ID token is verified locally with Node's crypto: RS256 against Google's JWKS (cached per Google's `Cache-Control`; an unknown key ID triggers at most one refetch a minute), issuer, audience, expiry, issue time, nonce and `email_verified === true`. The email must equal `SMB_OWNER_EMAIL`, and Google's `sub` is pinned at the first sign-in; a different `sub` is refused.
+- Sessions: `__Host-smb_session` (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`), 32 random bytes, stored only as SHA-256. 7 days idle, 30 days absolute, a new ID at every sign-in. Sign out, Sign out everywhere (an epoch bump), a change of `SMB_OWNER_EMAIL`, a change of `SMB_SECRET_KEY` and a start with sign-in off end sessions. The owner email is kept only as an HMAC under a random per-install salt.
+- State-changing requests need a form token derived from the session (HMAC), the same value in the `smb_csrf` cookie, and an `Origin` (or `Referer`) from the UI's own address.
+- The UI never accepts a bearer token; `/mcp` never accepts the session cookie. The assistants' connect page accepts the owner session only in sign-in mode, with the session's form token and an explicit Connect.
+- `SMB_SECRET_KEY` and `SMB_GOOGLE_CLIENT_SECRET` are read from the environment only and never written to the data directory or shown in the UI.
+
 ## The MCP endpoint
 
 `/mcp` serves AI assistants (see [docs/ai-assistants.md](docs/ai-assistants.md)). It answers 404 until a token exists. The token is created in Settings (only its SHA-256 is written to the database; the plain value is held in process memory for at most 10 minutes so the next Settings view can show it once) or set as `SMB_MCP_TOKEN` (at least 24 characters, or it is ignored), compared in constant time, accepted only in the `Authorization` header on `/mcp` and in the sign-in form described below, and never logged. Messages are limited to 120 a minute per client (IPv6 by /64). A client that sends 120 missing or wrong tokens in a minute is paused for the rest of that minute — even a correct guess is refused — so guessing is capped; failures are counted under `mcp_unauthorized`. Clients are told apart by address as seen through a trusted proxy (see below). A tool call sent as a JSON-RPC notification is not run.
@@ -40,6 +51,6 @@ If you need stronger guarantees, cross-check beacons against your web server log
 
 ## Out of scope
 
-- Issues that require the UI to be exposed without authentication, contrary to the documentation
+- Issues that require the UI to be exposed without authentication (no sign-in and no proxy password), contrary to the documentation
 - Vulnerabilities in Docker, Caddy, Node or the host OS themselves
 - Missing security headers on the loopback-only UI

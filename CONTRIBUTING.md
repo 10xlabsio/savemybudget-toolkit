@@ -33,6 +33,25 @@ Node 20 or newer. The fixture generator produces synthetic traffic in which each
 - User-facing text follows the tone of the existing docs: describe, quantify, hedge. The toolkit flags clicks; Google decides what is invalid. Copy that says or implies "Google missed", "we recover", or "guaranteed" won't be merged.
 - Don't add any code path in which the tag or the toolkit contacts SaveMyBudget beyond the documented telemetry and version-check modules.
 
+## The detection core is generated
+
+`src/detection/` (the scorer, its rules file and the parity corpus) is generated from the maintainer's source and exported here in one piece, a few weeks after each rules version ships. Don't edit it by hand: every export writes `src/detection/PROVENANCE.json` with a sha256 for each file, and CI fails on any file that differs from it, is missing, or isn't listed.
+
+To change detection, open an issue: describe the clicks it gets wrong and, if you can, a synthetic example (documentation IP ranges such as `192.0.2.0/24`, `example.com` hosts, made-up click ids; never real visitor data). Fixes land in the maintainer's source and reach this repository with the next export. Pull requests that edit `src/detection/` directly can't pass CI and will be closed with a pointer to the issue. `src/detection/` and `.github/boundary/` are listed in `.github/CODEOWNERS`.
+
+## Boundary checks
+
+`.github/workflows/boundary.yml` runs on every pull request and on pushes to `main` and `v2`:
+
+- **gitleaks** (8.30.1, the repository's `.gitleaks.toml`, output redacted) over the tree and the new commits.
+- **Keyed-term scan** (`scripts/boundary-scan.mjs`). The maintainer keeps a short list of terms that must never appear in this repository, such as names that aren't ours to publish. The list is committed only as keyed hashes in `.github/boundary/keyed.json`: each entry is an HMAC-SHA256 of a normalised term under a key held as a repository secret, padded with decoys to 256 entries, so the file names nothing. The scan hashes every run of 1 to 6 words in every text file, in the commit messages, and in the pull request title, body and branch name, and fails on a match. It reports where, never what.
+- **Provenance** (`scripts/check-provenance.mjs`): the detection core matches its `PROVENANCE.json`.
+- **Tests** of these checks, and the parity corpus test once the corpus is in the tree.
+
+The keyed-term scan needs the secret, and GitHub doesn't give secrets to pull requests from forks, so on a fork that check fails. That's on purpose: a check that can't run fails rather than passes. If your pull request is otherwise ready, a maintainer re-runs it from a branch in this repository, with you as the commit author. If the scan flags your change, it names the file and line; rewording that line is enough, and you don't need to know what matched.
+
+Run the checks locally with `node scripts/check-provenance.mjs`, `gitleaks dir . --config .gitleaks.toml --redact`, and `node --test --import tsx test/boundary.test.ts`.
+
 ## Review cadence
 
 Issues and PRs are triaged weekly. A first response within a week is the aim; complex changes can take longer.

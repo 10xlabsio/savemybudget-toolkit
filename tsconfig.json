@@ -11,6 +11,7 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx",
     "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
     "declaration": false
   },
   "include": ["src"]

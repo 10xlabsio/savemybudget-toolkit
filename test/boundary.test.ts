@@ -306,3 +306,71 @@ test("gitleaks: a planted secret fails, and the output is redacted", { skip: git
   assert.equal(r.status, 1, r.stderr);
   assert.ok(!`${r.stdout}${r.stderr}`.includes(body), "secret printed unredacted");
 });
+
+// The export writes PROVENANCE.json pretty-printed, one `"<path>": "<sha256 hex>"` entry per line. A name such as
+// oauth.ts next to 64 hex characters reads as a generic API key to gitleaks' default rules; .gitleaks.toml allows
+// exactly that line shape in exactly that file, and nothing else.
+const PROVENANCE_PATH = "src/detection/PROVENANCE.json";
+const PROVENANCE_CORE = {
+  "src/detection/oauth.ts": "export const scopes = ['openid'];\n",
+  "src/detection/rules/rules.json": '{"version":1}\n',
+  "src/detection/rules/rules.md": "# Rules\n",
+};
+/** PROVENANCE.json as the export writes it: pretty-printed, so each file hash sits on its own line. */
+const prettyProvenance = (files: Record<string, string>) => `${JSON.stringify(JSON.parse(provenance(files)), null, 2)}\n`;
+
+/** The same scan as the workflow's "over the new commits" step, on a one-commit repo built from dir. */
+function gitleaksGit(dir: string) {
+  assert.ok(GITLEAKS, "gitleaks is required (BOUNDARY_TEST_REQUIRE_GITLEAKS=1) but was not found");
+  git(dir, "init", "-q");
+  git(dir, "add", ".");
+  git(dir, "commit", "-q", "-m", "Detection export");
+  return spawnSync(
+    GITLEAKS,
+    ["git", dir, "--config", GITLEAKS_CONFIG, "--redact", "--no-banner", "--exit-code", "1", "--log-opts=-1 HEAD"],
+    { encoding: "utf8" },
+  );
+}
+
+test("gitleaks: a provenance file with file-name/sha256 lines passes, over the tree and over the commit", { skip: gitleaksSkip }, (t) => {
+  const prov = prettyProvenance(PROVENANCE_CORE);
+  assert.match(prov, /^ {4}"oauth\.ts": "[0-9a-f]{64}",$/m, "the sample has the line shape the allowlist is for");
+  const dir = tree({ ...CLEAN_FILES, ...PROVENANCE_CORE, [PROVENANCE_PATH]: prov });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const r = gitleaks(dir);
+  assert.equal(r.status, 0, r.stderr);
+  const g = gitleaksGit(dir);
+  assert.equal(g.status, 0, g.stderr);
+});
+
+test("gitleaks: a planted key in the provenance file still fails", { skip: gitleaksSkip }, (t) => {
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const body = [...randomBytes(36)].map((b) => alphabet[b % alphabet.length]).join("");
+  const token = ["gh", "p_", body].join("");
+  const planted = prettyProvenance(PROVENANCE_CORE).replace('"files": {\n', `"files": {\n    "token": "${token}",\n`);
+  assert.ok(planted.includes(token));
+  const dir = tree({ ...CLEAN_FILES, ...PROVENANCE_CORE, [PROVENANCE_PATH]: planted });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const r = gitleaks(dir);
+  assert.equal(r.status, 1, "the allowlist let a planted key through");
+  assert.ok(!`${r.stdout}${r.stderr}`.includes(body), "secret printed unredacted");
+  assert.equal(gitleaksGit(dir).status, 1, "the allowlist let a planted key through (git mode)");
+});
+
+test("gitleaks: the allowlist is for that line shape in that file only", { skip: gitleaksSkip }, (t) => {
+  const prov = prettyProvenance(PROVENANCE_CORE);
+  const hex = prov.match(/"oauth\.ts": "([0-9a-f]{64})"/)![1];
+  const cases: Record<string, Record<string, string>> = {
+    // The same line, not lower-case hex: not the shape, so the generic rule applies as before.
+    "upper-case hex": { [PROVENANCE_PATH]: prov.replace(hex, hex.toUpperCase()) },
+    // A value that isn't a sha256 at all, on the line of a file name.
+    "not a sha256": { [PROVENANCE_PATH]: prov.replace(hex, `${hex.slice(0, 40)}-${hex.slice(40, 60)}`) },
+    // The exact line shape in a different file.
+    "another file": { "src/other/manifest.json": `{\n  "oauth.ts": "${hex}"\n}\n` },
+  };
+  for (const [name, files] of Object.entries(cases)) {
+    const dir = tree({ ...CLEAN_FILES, ...PROVENANCE_CORE, ...files });
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    assert.equal(gitleaks(dir).status, 1, `${name}: expected a finding`);
+  }
+});

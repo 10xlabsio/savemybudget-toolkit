@@ -5,3 +5,23 @@ title = "savemybudget-toolkit"
 
 [extend]
 useDefault = true
+
+# Proven false positive: src/detection/PROVENANCE.json maps each file of the generated detection core to its
+# sha256 (see scripts/check-provenance.mjs), one entry per line. A line such as `"oauth.ts": "<64 hex>"` trips
+# the built-in generic-api-key rule ("auth" next to a high-entropy value), which would fail every export.
+#
+# The entry below is an allowlist on that one rule, not a global one: a global allowlist with `paths` skips the
+# whole file whatever `condition` says (checked on 8.30.1), and a rule-level one is evaluated per finding. With
+# condition = "AND" a finding is dropped only when both hold: the file is src/detection/PROVENANCE.json and the
+# whole line is a quoted file name (.ts, .json or .md) followed by exactly 64 lower-case hex characters. Any
+# other value on any line of that file, and lines of this shape in any other file, are still reported. Every
+# other rule still runs over the file. test/boundary.test.ts checks all of this.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "PROVENANCE.json lines: a file name and its sha256 hex"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)src/detection/PROVENANCE\.json$''']
+regexes = ['''^\s*"[A-Za-z0-9_./-]+\.(?:ts|json|md)": "[0-9a-f]{64}",?$''']

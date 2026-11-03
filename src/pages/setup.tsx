@@ -8,6 +8,27 @@ export interface SetupProps {
   nonce: string; csrf: string; sites: Site[];
   publicUrl: string; tz: string; telemetryOn: boolean; telemetryEnv: boolean;
   saved?: boolean;
+  /** Which sign-in settings are present in the environment (names only, never values). */
+  signin: { client: boolean; ownerEmail: boolean; secretKey: boolean };
+}
+
+function SigninStep({ s }: { s: SetupProps['signin'] }) {
+  const rows: [boolean, string, string][] = [
+    [s.client, 'Google OAuth client', 'SMB_GOOGLE_CLIENT_ID and SMB_GOOGLE_CLIENT_SECRET'],
+    [s.ownerEmail, 'Owner email', 'SMB_OWNER_EMAIL'],
+    [s.secretKey, 'Secret key', 'SMB_SECRET_KEY'],
+  ];
+  return (
+    <div class="card">
+      <h2>0. Sign-in and Google Ads</h2>
+      <p class="hint">Optional. With a Google OAuth client and <code>SMB_OWNER_EMAIL</code> set, only you can open this UI. Then you can connect Google Ads.</p>
+      <ul class="plain">
+        {rows.map(([ok, what, env]) => (
+          <li>{ok ? '✓' : '—'} {what}{ok ? null : <> · set <code>{env}</code> (<a href="/docs/owner-sign-in">how</a>)</>}</li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export function SetupPage(p: SetupProps) {
@@ -22,6 +43,7 @@ o.className=j.ok&&j.warning?'note amber':'hint';}).catch(function(){o.className=
       <h1>Set up your toolkit</h1>
       <p class="sub">Three things to confirm, then add your first site.</p>
       {p.saved ? <div class="note green">Saved.</div> : null}
+      <SigninStep s={p.signin} />
       <form method="post" action="/api/settings">
         <Csrf token={p.csrf} />
         <input type="hidden" name="_next" value="/setup?saved=1" />

@@ -26,6 +26,8 @@ Needs the public URL set (Settings → Instance) and the Caddyfile's `@mcp` bloc
 2. Give it a name and paste `https://t.example.com/mcp`. Leave the advanced OAuth fields empty.
 3. Choose **Connect**. A page on your toolkit opens and names the app asking; paste the token and choose **Connect**.
 
+With [owner sign-in](owner-sign-in.md) on, and the UI on the same address as the public URL, the page also offers **Sign in with Google**: once you're signed in as the owner, you choose **Connect** without pasting the token. Signing out of the UI later doesn't disconnect the assistant.
+
 The assistant stays signed in as long as it's used at least once every 30 days (its access is renewed hourly). Settings → AI assistants lists signed-in assistants and has **Sign out all**. A new token, or Turn off, signs every assistant out.
 
 **Claude Code**

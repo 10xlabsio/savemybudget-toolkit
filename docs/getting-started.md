@@ -46,7 +46,7 @@ The UI is on the host at `http://127.0.0.1:8080`. From your laptop, tunnel to it
 ssh -L 8080:127.0.0.1:8080 user@your-host
 ```
 
-then open `http://127.0.0.1:8080` in your browser. The first-run page checks your public URL, asks for your timezone, and shows the telemetry notice. If you'd rather expose the UI directly, put a password in front of it — see [Configuration → Exposing the UI](configuration.md#exposing-the-ui).
+then open `http://127.0.0.1:8080` in your browser. The first-run page checks your public URL, asks for your timezone, and shows the telemetry notice. Its step 0 lists the optional Google sign-in settings: with them set, only your Google account can open the UI, even over the tunnel (see [Owner sign-in](owner-sign-in.md); open `http://localhost:8080` then). If you'd rather expose the UI directly, turn sign-in on first — see [Configuration → Exposing the UI](configuration.md#exposing-the-ui).
 
 ## 4. Add a site and install the tag
 

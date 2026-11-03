@@ -52,14 +52,14 @@ describe('migrations', () => {
     assert.equal(JSON.stringify(d.prepare('SELECT * FROM _migrations').all()), before);
   });
 
-  it('adds only the five new sites columns and the audit log; 1.x tables keep their shape', () => {
+  it('adds only the five new sites columns, the audit log and the owner sign-in tables; 1.x tables keep their shape', () => {
     const d = new DatabaseSync(':memory:');
     runMigrations(d);
     const cols = (t: string) => (d.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
     assert.ok(cols('events').includes('ts') && cols('events').includes('asn_name'));
     assert.ok(cols('verdicts').includes('analysis_id'));
     for (const c of ['verified_at', 'first_gclid_at', 'v2_started_at', 'time_zone', 'consent_gated']) assert.ok(cols('sites').includes(c), c);
-    const extra = tables(d).filter((t) => ![...V1_TABLES, 'audit_log', '_migrations', 'sqlite_sequence'].includes(t));
+    const extra = tables(d).filter((t) => ![...V1_TABLES, 'audit_log', 'owner', 'owner_sessions', 'owner_signin_states', '_migrations', 'sqlite_sequence'].includes(t));
     assert.deepEqual(extra, []);
     d.exec(`INSERT INTO sites(name, host, key, created_at) VALUES ('A', 'a.test', 'k', '2026-09-01T00:00:00.000Z')`);
     assert.equal((d.prepare('SELECT consent_gated AS c FROM sites').get() as { c: number }).c, 0);
@@ -70,7 +70,7 @@ describe('migrations', () => {
     runMigrations(d);
     d.exec('DELETE FROM _migrations WHERE id = 2');
     runMigrations(d);
-    assert.equal((d.prepare('SELECT COUNT(*) AS n FROM _migrations').get() as { n: number }).n, 2);
+    assert.equal((d.prepare('SELECT COUNT(*) AS n FROM _migrations').get() as { n: number }).n, MIGRATIONS.length);
   });
 
   it('an existing 1.x file is backed up (mode 0600) before the upgrade, and keeps all its rows', () => {
@@ -138,10 +138,10 @@ describe('migrations', () => {
 
   it('one migration that fails rolls back alone and is not recorded', () => {
     const d = new DatabaseSync(':memory:');
-    const bad = { id: 3, name: 'bad', up(x: DatabaseSync) { x.exec('CREATE TABLE half_done (a)'); throw new Error('boom'); } };
+    const bad = { id: 101, name: 'bad', up(x: DatabaseSync) { x.exec('CREATE TABLE half_done (a)'); throw new Error('boom'); } };
     assert.throws(() => runMigrations(d, { migrations: [...MIGRATIONS, bad] }), /boom/);
     assert.ok(!tables(d).includes('half_done'));
-    assert.deepEqual((d.prepare('SELECT id FROM _migrations ORDER BY id').all() as { id: number }[]).map((r) => r.id), [1, 2]);
+    assert.deepEqual((d.prepare('SELECT id FROM _migrations ORDER BY id').all() as { id: number }[]).map((r) => r.id), MIGRATIONS.map((m) => m.id));
   });
 
   it('the audit log is append-only', () => {
@@ -265,11 +265,11 @@ describe('crash loop', () => {
     const dir = tmp();
     const path = makeV1File(dir);
     let d = new DatabaseSync(path);
-    runMigrations(d, { dbPath: path, stamp: () => 'A' }); // a 2.x file: 1 and 2 applied
+    runMigrations(d, { dbPath: path, stamp: () => 'A' }); // a 2.x file: every shipped migration applied
     d.close();
     for (const b of listBackups(dir)) rmSync(join(dir, b.name));
-    const real = { id: 3, name: 'real', up(x: DatabaseSync) { x.exec('ALTER TABLE events RENAME TO events_v1'); } };
-    const fail = { id: 4, name: 'fail', backupFirst: true, up() { throw new Error('boom'); } };
+    const real = { id: 101, name: 'real', up(x: DatabaseSync) { x.exec('ALTER TABLE events RENAME TO events_v1'); } };
+    const fail = { id: 102, name: 'fail', backupFirst: true, up() { throw new Error('boom'); } };
     d = new DatabaseSync(path);
     assert.throws(() => runMigrations(d, { dbPath: path, migrations: [...MIGRATIONS, real, fail], stamp: () => 'B' }), /boom/);
     assert.ok(tables(d).includes('events_v1'));
@@ -362,7 +362,7 @@ describe('backup freshness and failures', () => {
     const pages = (d.prepare('PRAGMA page_count').get() as { page_count: number }).page_count;
     d.exec(`PRAGMA max_page_count = ${pages + 4}`);
     const big = {
-      id: 3, name: 'big',
+      id: 101, name: 'big',
       up(x: DatabaseSync) {
         x.exec('CREATE TABLE filler (b BLOB)');
         x.exec('WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) INSERT INTO filler SELECT zeroblob(4000) FROM n');

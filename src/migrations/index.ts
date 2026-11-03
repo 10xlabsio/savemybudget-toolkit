@@ -5,6 +5,7 @@ import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, ope
 import { dirname, join } from 'node:path';
 import { baseline } from './001_v1_baseline.js';
 import { v2Tables } from './002_v2_tables.js';
+import { ownerAuth } from './003_owner_auth.js';
 
 /**
  * Forward-only, numbered migrations. Each one runs in its own transaction and is recorded in `_migrations`;
@@ -18,7 +19,7 @@ export interface Migration {
   up(d: DatabaseSync): void;
 }
 
-export const MIGRATIONS: Migration[] = [baseline, v2Tables];
+export const MIGRATIONS: Migration[] = [baseline, v2Tables, ownerAuth];
 
 export interface MigrateOptions {
   /** Path of the database file. Omit for an in-memory database: no backup is taken. */

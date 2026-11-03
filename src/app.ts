@@ -17,8 +17,10 @@ import { activeNotifications, retentionDays, silentThresholdHours, storeSizeMb, 
 import { loadAnalysis } from './rules/index.js';
 import { checkWindow } from './claim/index.js';
 import * as telemetry from './telemetry/index.js';
+import { authMode, safeEqual } from './auth/owner.js';
+import { mountOwnerAuth, ownerGate } from './auth/routes.js';
 import {
-  CSRF_COOKIE, CSRF_SECRET, DATA_ASSETS_DIR, DOCS_DIR, ROOT, TEMPLATES_DIR, bytes, daysAgo, multipartCapBytes, page, parseBufferedForm, publicUrl, readBodyCapped, today, tz, type AppEnv, type Ctx,
+  CSRF_COOKIE, CSRF_SECRET, normHost, requestScope, uiOrigin, DATA_ASSETS_DIR, DOCS_DIR, ROOT, TEMPLATES_DIR, bytes, daysAgo, multipartCapBytes, page, parseBufferedForm, publicUrl, readBodyCapped, today, tz, type AppEnv, type Ctx,
 } from './ui.js';
 import { SetupPage } from './pages/setup.js';
 import { SiteFormPage, SitesPage, type SiteRow } from './pages/sites.js';
@@ -66,18 +68,11 @@ app.mount('/.well-known', wellKnownApp.fetch);
 // ---------- UI middleware ----------
 
 const UI_EXEMPT_FROM_SETUP = (path: string) =>
-  path === '/setup' || path.startsWith('/api/') || path.startsWith('/docs/') || path === '/about' || path === '/settings' || path.startsWith('/templates/') || path === '/sites/new' || path === '/api/sites';
+  path === '/setup' || path.startsWith('/auth/') || path.startsWith('/api/') || path.startsWith('/docs/') || path === '/about' || path === '/settings' || path.startsWith('/templates/') || path === '/sites/new' || path === '/api/sites';
 
-/** Drops the default port so "host" and "host:443" compare equal. */
-const normHost = (h: string) => h.toLowerCase().replace(/:(80|443)$/, '');
 
 const isLoopback = (h: string) => { const p = config.port; return h === normHost(`127.0.0.1:${p}`) || h === normHost(`localhost:${p}`) || h === normHost(`[::1]:${p}`); };
 
-/** The origin of SMB_UI_URL (default ports normalised by URL), or null when unset or unparsable. */
-function uiOrigin(): string | null {
-  if (!config.uiUrl) return null;
-  try { return new URL(config.uiUrl).origin; } catch { return null; }
-}
 
 /** Host values the UI answers to: loopback on the listening port, plus the host of SMB_UI_URL when set. Environment only; nothing editable in the UI feeds this list. */
 function hostAllowed(host: string | undefined): boolean {
@@ -101,15 +96,24 @@ app.use('*', async (c, next) => {
   // Requests for a Host that is not one of ours get 421 before any handler, cookie or token.
   if (!hostAllowed(c.req.header('host'))) return c.text('Misdirected request. This address is not one the Toolkit web UI is set up to answer on. To use another address, set SMB_UI_URL to it and restart.', 421, { 'cache-control': 'no-store' });
 
+  // With a Google OAuth client configured, the owner's session is required here (or the locked page is all there is).
+  const gate = await ownerGate(c);
+  if (gate instanceof Response) return gate;
+  const session = gate.session;
+  const open = authMode().kind === 'open';
+  // The form token: per process without sign-in; derived from the session with it. Before sign-in there is none.
+  const csrf = open ? CSRF_SECRET : session?.csrf ?? '';
+  c.set('csrf', csrf);
+
   const nonce = randomBytes(16).toString('base64');
   c.set('nonce', nonce);
   c.set('sites', listSites());
 
-  // CSRF cookie: per-process secret, HttpOnly, SameSite=Strict. The token is also written into each page by the server, for its forms and fetches.
+  // CSRF cookie: HttpOnly, SameSite=Strict, holding the same token. The token is also written into each page by the server, for its forms and fetches.
   // Secure when the request itself is https, or when a trusted proxy in front terminated TLS.
   const viaHttps = c.req.url.startsWith('https:') || (config.trustProxy && (c.req.header('x-forwarded-proto') ?? '').split(',')[0].trim().toLowerCase() === 'https');
-  if (getCookie(c, CSRF_COOKIE) !== CSRF_SECRET) {
-    setCookie(c, CSRF_COOKIE, CSRF_SECRET, { path: '/', sameSite: 'Strict', httpOnly: true, secure: viaHttps });
+  if (csrf && getCookie(c, CSRF_COOKIE) !== csrf) {
+    setCookie(c, CSRF_COOKIE, csrf, { path: '/', sameSite: 'Strict', httpOnly: true, secure: viaHttps });
   }
 
   const method = c.req.method;
@@ -131,7 +135,7 @@ app.use('*', async (c, next) => {
     return c.redirect('/setup', 302);
   }
 
-  await next();
+  await requestScope.run({ csrf, ownerEmail: session?.email ?? null, open }, next);
 
   const h = c.res.headers;
   h.set('content-security-policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`);
@@ -166,9 +170,14 @@ async function csrfProblem(c: Ctx): Promise<string | null> {
       } catch { /* no body */ }
     }
   }
-  if (!token || token !== CSRF_SECRET || cookie !== CSRF_SECRET) return 'Missing or stale form token. Reload the page and try again.';
+  const expected = c.get('csrf');
+  if (!expected || !token || !cookie || !safeEqual(token, expected) || !safeEqual(cookie, expected)) return 'Missing or stale form token. Reload the page and try again.';
   return null;
 }
+
+// ---------- owner sign-in (404 unless a Google OAuth client is configured) ----------
+
+mountOwnerAuth(app);
 
 // ---------- templates & docs ----------
 
@@ -198,8 +207,9 @@ app.get('/TELEMETRY.md', (c) => c.redirect('/docs/telemetry', 302));
 app.get('/', (c) => c.redirect('/sites', 302));
 
 app.get('/setup', (c) => page(c, SetupPage({
-  nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'),
+  nonce: c.get('nonce'), csrf: c.get('csrf'), sites: c.get('sites'),
   publicUrl: publicUrl(), tz: tz(), telemetryOn: telemetry.enabled(), telemetryEnv: config.telemetry, saved: c.req.query('saved') === '1',
+  signin: { client: !!(config.googleClientId && config.googleClientSecret), ownerEmail: !!config.ownerEmail, secretKey: !!config.secretKey },
 })));
 
 function siteOr404(c: Ctx): Site | null {
@@ -246,12 +256,12 @@ function formValuesFromQuery(c: Ctx, site?: Site | null) {
   };
 }
 
-app.get('/sites/new', (c) => page(c, SiteFormPage({ nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), values: formValuesFromQuery(c), error: c.req.query('error') ?? null })));
+app.get('/sites/new', (c) => page(c, SiteFormPage({ nonce: c.get('nonce'), csrf: c.get('csrf'), sites: c.get('sites'), values: formValuesFromQuery(c), error: c.req.query('error') ?? null })));
 
 app.get('/sites/:id/edit', (c) => {
   const site = siteOr404(c);
   if (!site) return c.notFound();
-  return page(c, SiteFormPage({ nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, values: formValuesFromQuery(c, site), error: c.req.query('error') ?? null }));
+  return page(c, SiteFormPage({ nonce: c.get('nonce'), csrf: c.get('csrf'), sites: c.get('sites'), site, values: formValuesFromQuery(c, site), error: c.req.query('error') ?? null }));
 });
 
 app.get('/sites/:id/install', (c) => {
@@ -262,7 +272,7 @@ app.get('/sites/:id/install', (c) => {
     setSetting(key, new Date().toISOString());
     telemetry.track('snippet_generated', { consent_mode: site.consent_mode });
   }
-  return page(c, InstallPage({ nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, publicUrl: publicUrl(), hasBeacon: !!site.first_event_at, firstEventAt: site.first_event_at }));
+  return page(c, InstallPage({ nonce: c.get('nonce'), csrf: c.get('csrf'), sites: c.get('sites'), site, publicUrl: publicUrl(), hasBeacon: !!site.first_event_at, firstEventAt: site.first_event_at }));
 });
 
 app.get('/sites/:id', (c) => {
@@ -307,7 +317,7 @@ app.get('/sites/:id/uploads', (c) => {
   const uploads = db().prepare('SELECT id, filename, format, rows_imported, rows_total, range_from, range_to, created_at FROM uploads WHERE site_id = ? ORDER BY created_at DESC').all(site.id) as unknown as UploadRow[];
   const imported = c.req.query('imported');
   return page(c, UploadsPage({
-    nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, notifications: activeNotifications(site.id), uploads, maxUploadMb: config.maxUploadMb,
+    nonce: c.get('nonce'), csrf: c.get('csrf'), sites: c.get('sites'), site, notifications: activeNotifications(site.id), uploads, maxUploadMb: config.maxUploadMb,
     flash: imported ? `Imported ${Number(imported).toLocaleString('en-GB')} rows. They join the beacons in the next analysis.` : null,
   }));
 });
@@ -333,14 +343,14 @@ app.get('/sites/:id/analyse', (c) => {
   const packages = d.prepare('SELECT p.id, p.rows, p.created_at, p.analysis_id, a.range_from, a.range_to FROM packages p JOIN analyses a ON a.id = p.analysis_id WHERE a.site_id = ? ORDER BY p.created_at DESC').all(site.id) as unknown as PackageRow[];
   const pk = Number(c.req.query('package'));
   return page(c, AnalysePage({
-    nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), site, notifications: activeNotifications(site.id),
+    nonce: c.get('nonce'), csrf: c.get('csrf'), sites: c.get('sites'), site, notifications: activeNotifications(site.id),
     from, to, today: today(), windowMsg: w.ok && !w.warning ? null : { message: w.ok ? undefined : w.message, warning: w.warning },
     error: c.req.query('error') ?? null, analysis, analyses, packages, justBuilt: Number.isInteger(pk) && pk > 0 ? pk : null,
   }));
 });
 
 app.get('/settings', (c) => page(c, SettingsPage({
-  nonce: c.get('nonce'), csrf: CSRF_SECRET, sites: c.get('sites'), notifications: activeNotifications(null),
+  nonce: c.get('nonce'), csrf: c.get('csrf'), sites: c.get('sites'), notifications: activeNotifications(null),
   publicUrl: publicUrl(), tz: tz(), retentionDays: retentionDays(), storeMb: storeSizeMb(), silentHours: silentThresholdHours(),
   telemetryOn: telemetry.enabled(), telemetryEnv: config.telemetry, updateCheckOn: config.updateCheck && getSetting('update_check') !== 'off', updateCheckEnv: config.updateCheck,
   bind: `${config.bind}:${config.port}`,

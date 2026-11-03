@@ -6,7 +6,7 @@ import { siteHealth, type Health } from '../db.js';
 import { silentThresholdHours, type Notification } from '../jobs/index.js';
 import { RULES } from '../rules/index.js';
 import type { Site } from '../types.js';
-import { relTime, fmtDay, n, displayHost, CSRF_SECRET } from '../ui.js';
+import { relTime, fmtDay, n, displayHost, currentCsrf, requestScope } from '../ui.js';
 
 export const CSS = `
 :root{--bg:#f6f6f8;--panel:#fff;--ink:#1B1B2F;--muted:#5d5c72;--line:#e3e2ea;--brand:#7A9A12;--brandname:#1B1B2F;--lav:#ece9f7;--lav-ink:#4a4470;
@@ -32,6 +32,7 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:0 0 10px}h3{font-size:
 .sw summary .h{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw .menu{position:absolute;left:0;top:calc(100% + 6px);min-width:260px;max-width:90vw;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:6px;z-index:10}
 .sw .menu a{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;text-decoration:none;color:var(--ink);font-size:14px}.sw .menu a:hover{background:var(--bg)}
+.sw.owner .menu{left:auto;right:0;min-width:200px}.sw.owner form{padding:4px 6px}
 .sw .menu a small{color:var(--muted);margin-left:auto;font-size:12px}.sw .menu hr{border:0;border-top:1px solid var(--line);margin:6px 0}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;flex:none}.dot.green{background:#2fa35a}.dot.amber{background:#e0a100}.dot.grey{background:var(--grey)}
 main{max-width:1080px;margin:0 auto;padding:22px 16px 60px}
@@ -97,13 +98,15 @@ export function healthOf(s: Site | null | undefined): Health {
 export const Dot = ({ h }: { h: Health }) => <span class={`dot ${h}`} title={h === 'green' ? 'Sending data' : h === 'amber' ? 'Silent' : 'No data yet'} />;
 
 export function Layout(p: LayoutProps) {
+  const scope = requestScope.getStore();
+  const csrf = currentCsrf();
   return (
     <html lang="en">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="light dark" />
-        <meta name="csrf-token" content={CSRF_SECRET} />
+        <meta name="csrf-token" content={csrf} />
         <title>{p.title} · SaveMyBudget Toolkit</title>
         <style dangerouslySetInnerHTML={{ __html: CSS }} />
       </head>
@@ -118,15 +121,34 @@ export function Layout(p: LayoutProps) {
               <a href="/docs/getting-started" class={p.section === 'docs' ? 'on' : ''}>Docs</a>
               <a href="/about" class={p.section === 'about' ? 'on' : ''}>About</a>
             </nav>
+            {scope?.ownerEmail ? <OwnerMenu email={scope.ownerEmail} csrf={csrf} /> : null}
           </div>
         </header>
         <main>
+          {scope?.open ? (
+            <div class="note grey">
+              <div>Anyone who can reach this port can use the toolkit. <a href="/docs/owner-sign-in">Add Google sign-in to lock it to you.</a></div>
+            </div>
+          ) : null}
           {p.notifications && p.notifications.length ? <Notifications items={p.notifications} sites={p.sites} nonce={p.nonce} /> : null}
           {p.children}
           <div class="foot">SaveMyBudget Toolkit {config.version} · <a href="/docs/getting-started">Docs</a> · <a href="/about">About</a></div>
         </main>
       </body>
     </html>
+  );
+}
+
+function OwnerMenu({ email, csrf }: { email: string; csrf: string }) {
+  return (
+    <details class="sw owner">
+      <summary><span class="h">Signed in as {email}</span></summary>
+      <div class="menu">
+        <form method="post" action="/auth/signout"><Csrf token={csrf} /><button class="btn sm" type="submit">Sign out</button></form>
+        <hr />
+        <form method="post" action="/auth/signout-everywhere"><Csrf token={csrf} /><button class="btn sm" type="submit">Sign out everywhere</button></form>
+      </div>
+    </details>
   );
 }
 

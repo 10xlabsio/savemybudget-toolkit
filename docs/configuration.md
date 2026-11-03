@@ -19,6 +19,10 @@ All settings are environment variables, read at start. Values you change in the 
 | `SMB_UPDATE_CHECK` | `on` | `off` disables the daily version check. |
 | `SMB_LOG_LEVEL` | `info` | `debug` includes request details; never visitor IPs at `info`. |
 | `SMB_MCP_TOKEN` | — | Bearer token for AI assistants at `/mcp`. Overrides the one created in Settings → AI assistants. With neither, `/mcp` answers 404. See [AI assistants](ai-assistants.md). |
+| `SMB_GOOGLE_CLIENT_ID` | — | Your Google OAuth client ID. Setting it turns on owner sign-in: every UI request then needs a Google sign-in by `SMB_OWNER_EMAIL`. See [Owner sign-in](owner-sign-in.md). |
+| `SMB_GOOGLE_CLIENT_SECRET` | — | That client's secret. Read from the environment only; never stored or shown. |
+| `SMB_OWNER_EMAIL` | — | The one Google account that may sign in (case doesn't matter). Required once `SMB_GOOGLE_CLIENT_ID` is set: without it the UI shows only a page asking for it. Changing it ends every session. |
+| `SMB_SECRET_KEY` | — | Base64 of exactly 32 random bytes (`openssl rand -base64 32`). Environment only, never written to the data directory; keep it out of backups of `/data`. Optional for sign-in (it then keys the sign-in and form tokens); later versions need it to connect Google Ads. The toolkit refuses to start if it's set to anything else. Changing it ends every session. |
 
 `.env.example` in the repository lists all of them with comments.
 
@@ -83,7 +87,7 @@ Replace `t.example.com` with your subdomain. Caddy obtains and renews the certif
 
 ## Exposing the UI
 
-Don't, if you can avoid it — an SSH tunnel is the simplest safe option. If you must, add a second site block to the Caddyfile with basic auth:
+Don't, if you can avoid it — an SSH tunnel is the simplest safe option. If you must, turn on [owner sign-in](owner-sign-in.md) first, so only your Google account can open it. Without sign-in, put basic auth in front of it. Either way, add a second site block to the Caddyfile (drop the `basic_auth` block when sign-in is on):
 
 ```
 ui.example.com {

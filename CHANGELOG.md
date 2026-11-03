@@ -9,6 +9,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - New optional columns on sites and an append-only audit log. Nothing from 1.x changes, and the 1.x image still runs on the same file.
 - Upgrading an existing database first checks for free space and writes a fresh `backup-v1-<timestamp>.sqlite` (owner-only); with too little room it stops and changes nothing. The copy is deleted automatically once the retention period has passed, and Settings shows a notice while it exists.
 - The data directory and everything in it is owner-only (`0700` folders, `0600` files), and existing files are tightened at start.
+- **Owner sign-in with Google.** Set `SMB_GOOGLE_CLIENT_ID`, `SMB_GOOGLE_CLIENT_SECRET` and `SMB_OWNER_EMAIL` and every UI request needs a Google sign-in by that one account, loopback included. Server-side sessions (`__Host-smb_session`, 7 days idle, 30 days at most), **Sign out** and **Sign out everywhere**, and form tokens derived from the session. Without a client ID nothing changes, apart from a banner saying the UI is open to anyone who reaches the port. See [docs/owner-sign-in.md](docs/owner-sign-in.md).
+- `SMB_SECRET_KEY` (base64 of 32 bytes, environment only); the toolkit refuses to start when it's malformed.
+- The AI assistant connect page accepts the signed-in owner instead of the token, with the same Connect step.
+- The first-run page lists the sign-in settings as step 0.
 
 ## [1.1.1] — 2026-10-22
 

@@ -4,6 +4,7 @@
 /src/detection/ @10xlabsio
 /.github/boundary/ @10xlabsio
 /.github/CODEOWNERS @10xlabsio
+/.github/workflows/ @10xlabsio
 /.github/workflows/boundary.yml @10xlabsio
 /.gitleaks.toml @10xlabsio
 /scripts/boundary-scan.mjs @10xlabsio

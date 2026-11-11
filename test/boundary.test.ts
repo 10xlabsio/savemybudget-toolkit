@@ -283,7 +283,8 @@ const gitleaksSkip =
 
 function gitleaks(dir: string) {
   assert.ok(GITLEAKS, "gitleaks is required (BOUNDARY_TEST_REQUIRE_GITLEAKS=1) but was not found");
-  return spawnSync(GITLEAKS, ["dir", dir, "--config", GITLEAKS_CONFIG, "--redact", "--no-banner", "--exit-code", "1"], {
+  return spawnSync(GITLEAKS, ["dir", ".", "--config", GITLEAKS_CONFIG, "--redact", "--no-banner", "--exit-code", "1"], {
+    cwd: dir,
     encoding: "utf8",
   });
 }

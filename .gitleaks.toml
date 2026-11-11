@@ -23,5 +23,5 @@ id = "generic-api-key"
 description = "PROVENANCE.json lines: a file name and its sha256 hex"
 condition = "AND"
 regexTarget = "line"
-paths = ['''(^|/)src/detection/PROVENANCE\.json$''']
+paths = ['''^src/detection/PROVENANCE\.json$''']
 regexes = ['''^\s*"[A-Za-z0-9_./-]+\.(?:ts|json|md)": "[0-9a-f]{64}",?$''']
